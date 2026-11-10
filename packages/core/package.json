@@ -16,7 +16,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js",
+    "test": "node --experimental-vm-modules ../../node_modules/.bin/jest --config jest.config.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {

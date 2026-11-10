@@ -29,7 +29,7 @@ TypeScript, Node.js, Vite, React, better-sqlite3, OpenAI SDK, semantic-similarit
 Core logic in `@sentry-prompt/core` handles DB, API, and diffing; VS Code extension wraps core with `vscode-webview` for UI and file watchers; Web app shares same core via ESM.
 
 ## Steps
-- [ ] 1. Initialize monorepo with `packages/core`, `packages/web`, `packages/vscode` and define shared TypeScript types
+- [x] 1. Initialize monorepo with `packages/core`, `packages/web`, `packages/vscode` and define shared TypeScript types
 - [x] 2. Implement `better-sqlite3` schema for prompts, versions, runs, and metrics, and verify with a test query
 - [x] 3. Build versioning engine with content-hash, text diff, and rollback logic, and test commit/diff/rollback commands
 - [ ] 4. Create OpenAI-compatible client supporting streaming and non-streaming, and verify against a local Ollama instance
