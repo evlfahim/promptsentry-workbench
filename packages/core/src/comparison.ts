@@ -1,4 +1,9 @@
+/**
+ * Comparison engine for PromptSentry Workbench.
+ * Computes lexical diffs, similarity scores, and manages test sets.
+ */
 import crypto from 'node:crypto';
+import { diffLines } from 'diff';
 import type { DB } from './db.js';
 import type {
   ComparisonResult,
@@ -10,7 +15,8 @@ import type {
   TestSetCreate,
 } from './types.js';
 
-// Row types from SQLite (snake_case column names)
+// ─── Row types from SQLite (snake_case column names) ─────────────────────────
+
 interface PromptRunRow {
   id: string;
   prompt_id: string;
@@ -47,11 +53,26 @@ function mapRun(row: PromptRunRow): PromptRun {
   };
 }
 
+// ─── Options for runTestSet ──────────────────────────────────────────────────
+
+export interface RunTestSetOptions {
+  /** Callback for each test result as it completes */
+  onResult?: (result: TestRunResult) => void;
+  /** Abort the test set run with this signal */
+  signal?: AbortSignal;
+}
+
+// ─── ComparisonEngine ────────────────────────────────────────────────────────
+
 export class ComparisonEngine {
   constructor(private db: DB) {}
 
+  // ─── Compare two runs side by side ────────────────────────────────────────
+
   /**
    * Compare two runs side by side.
+   * Computes lexical diff, lexical similarity, semantic similarity,
+   * and metric deltas (latency, tokens, cost).
    */
   compareRuns(runIdA: string, runIdB: string): ComparisonResult {
     const conn = this.db.connection;
@@ -75,13 +96,13 @@ export class ComparisonEngine {
     const runA = mapRun(rowA);
     const runB = mapRun(rowB);
 
-    // Compute lexical diff
+    // Compute lexical diff using the diff library (same as versioning)
     const lexicalDiff = this.computeLexicalDiff(runA.output, runB.output);
 
-    // Compute lexical similarity
+    // Compute lexical similarity (character bigram Jaccard)
     const lexicalSimilarity = this.computeLexicalSimilarity(runA.output, runB.output);
 
-    // Compute semantic similarity (using hash-based approximation for now)
+    // Compute semantic similarity (word-level Jaccard on normalized tokens)
     const semanticSimilarity = this.computeSemanticSimilarity(runA.output, runB.output);
 
     return {
@@ -98,46 +119,36 @@ export class ComparisonEngine {
     };
   }
 
-  /**
-   * Compute lexical diff between two texts.
-   */
-  private computeLexicalDiff(textA: string, textB: string): LexicalDiff {
-    const linesA = textA.split('\n');
-    const linesB = textB.split('\n');
+  // ─── Lexical diff ─────────────────────────────────────────────────────────
 
-    // Simple line-by-line diff
-    const additions: string[] = [];
-    const deletions: string[] = [];
-    let commonLines = 0;
+  /**
+   * Compute a proper lexical diff between two texts using the `diff` library.
+   * Returns additions, deletions, and line counts.
+   */
+  computeLexicalDiff(textA: string, textB: string): LexicalDiff {
+    const diffResult = diffLines(textA, textB);
+
+    const additionsArr: string[] = [];
+    const deletionsArr: string[] = [];
     let addedLines = 0;
     let deletedLines = 0;
+    let commonLines = 0;
 
-    const maxLen = Math.max(linesA.length, linesB.length);
-
-    for (let i = 0; i < maxLen; i++) {
-      const lineA = linesA[i];
-      const lineB = linesB[i];
-
-      if (lineA === undefined) {
-        additions.push(lineB ?? '');
+    for (const part of diffResult) {
+      if (part.added) {
         addedLines++;
-      } else if (lineB === undefined) {
-        deletions.push(lineA);
+        additionsArr.push(part.value);
+      } else if (part.removed) {
         deletedLines++;
-      } else if (lineA === lineB) {
-        commonLines++;
+        deletionsArr.push(part.value);
       } else {
-        // Lines differ - treat as both added and deleted
-        deletions.push(lineA);
-        additions.push(lineB);
-        deletedLines++;
-        addedLines++;
+        commonLines++;
       }
     }
 
     return {
-      additions: additions.join('\n'),
-      deletions: deletions.join('\n'),
+      additions: additionsArr.join(''),
+      deletions: deletionsArr.join(''),
       common: '',
       addedLines,
       deletedLines,
@@ -145,15 +156,17 @@ export class ComparisonEngine {
     };
   }
 
+  // ─── Lexical similarity ───────────────────────────────────────────────────
+
   /**
    * Compute lexical similarity between two texts (0-1).
+   * Uses Jaccard similarity on character bigrams.
    */
-  private computeLexicalSimilarity(textA: string, textB: string): number {
+  computeLexicalSimilarity(textA: string, textB: string): number {
     if (textA === textB) return 1.0;
     if (textA.length === 0 && textB.length === 0) return 1.0;
     if (textA.length === 0 || textB.length === 0) return 0.0;
 
-    // Use Jaccard similarity on character bigrams
     const bigramsA = this.getBigrams(textA);
     const bigramsB = this.getBigrams(textB);
 
@@ -176,41 +189,55 @@ export class ComparisonEngine {
     return bigrams;
   }
 
+  // ─── Semantic similarity ──────────────────────────────────────────────────
+
   /**
-   * Compute semantic similarity using hash-based approximation.
-   * This is a simplified approach - in production, use actual semantic embeddings.
+   * Compute semantic similarity using word-level Jaccard similarity.
+   * Normalizes texts (lowercase, strip punctuation, filter short words)
+   * and compares word sets. This is a lightweight approximation of
+   * true semantic similarity — in production, use actual embeddings.
    */
-  private computeSemanticSimilarity(textA: string, textB: string): number {
+  computeSemanticSimilarity(textA: string, textB: string): number {
     if (textA === textB) return 1.0;
     if (textA.length === 0 && textB.length === 0) return 1.0;
     if (textA.length === 0 || textB.length === 0) return 0.0;
 
-    // Normalize texts
-    const normalize = (text: string) => text.toLowerCase().trim();
-    const normA = normalize(textA);
-    const normB = normalize(textB);
+    const normalize = (text: string) =>
+      text.toLowerCase().replace(/[^\w\s]/g, '').trim();
 
-    // Split into words
-    const wordsA = new Set(normA.split(/\s+/).filter(w => w.length > 2));
-    const wordsB = new Set(normB.split(/\s+/).filter(w => w.length > 2));
+    const wordsA = new Set(
+      normalize(textA).split(/\s+/).filter(w => w.length > 2),
+    );
+    const wordsB = new Set(
+      normalize(textB).split(/\s+/).filter(w => w.length > 2),
+    );
 
     if (wordsA.size === 0 && wordsB.size === 0) return 0.0;
     if (wordsA.size === 0 || wordsB.size === 0) return 0.0;
 
-    // Compute Jaccard similarity on words
     const intersection = new Set([...wordsA].filter(w => wordsB.has(w)));
     const union = new Set([...wordsA, ...wordsB]);
 
     return intersection.size / union.size;
   }
 
+  // ─── Test set execution ───────────────────────────────────────────────────
+
   /**
    * Run a test set against a prompt version.
+   * Executes each input through the API and records results.
+   *
+   * @param testSetId - ID of the test set to run
+   * @param promptId - ID of the prompt to use
+   * @param versionId - ID of the version to use
+   * @param options - Optional callbacks and abort signal
+   * @returns Array of test run results
    */
   async runTestSet(
     testSetId: string,
     promptId: string,
     versionId: string,
+    options: RunTestSetOptions = {},
   ): Promise<TestRunResult[]> {
     const conn = this.db.connection;
 
@@ -225,21 +252,101 @@ export class ComparisonEngine {
       return [];
     }
 
+    // Get prompt metadata to build the API request
+    const promptRow = conn
+      .prepare(
+        `SELECT model, temperature, maxTokens, system_prompt FROM prompts WHERE id = ?`,
+      )
+      .get(promptId) as {
+        model: string;
+        temperature: number;
+        maxTokens: number;
+        system_prompt: string | null;
+      } | undefined;
+
+    if (!promptRow) {
+      throw new Error(`Prompt ${promptId} not found`);
+    }
+
+    // Get version metadata
+    const versionRow = conn
+      .prepare(
+        `SELECT model, temperature, maxTokens, system_prompt FROM prompt_versions WHERE id = ?`,
+      )
+      .get(versionId) as {
+        model: string;
+        temperature: number;
+        maxTokens: number;
+        system_prompt: string | null;
+      } | undefined;
+
+    if (!versionRow) {
+      throw new Error(`Version ${versionId} not found`);
+    }
+
     const results: TestRunResult[] = [];
 
     for (const row of rows) {
+      // Check for abort
+      if (options.signal?.aborted) {
+        break;
+      }
+
       const startTime = Date.now();
       const id = crypto.randomUUID();
       const createdAt = new Date().toISOString();
 
       try {
-        // In a real implementation, this would call the API client
-        // For now, we'll create a placeholder result
-        const output = `[Test output for: ${row.input.substring(0, 50)}...]`;
-        const latencyMs = Date.now() - startTime;
-        const tokenCount = Math.ceil(output.length / 4);
+        // Use version metadata if available, otherwise fall back to prompt metadata
+        const model = versionRow.model || promptRow.model;
+        const temperature = versionRow.temperature ?? promptRow.temperature;
+        const maxTokens = versionRow.maxTokens ?? promptRow.maxTokens;
+        const systemPrompt = versionRow.system_prompt ?? promptRow.system_prompt;
 
-        results.push({
+        // Build the API request
+        const messages: Array<{ role: string; content: string }> = [];
+        if (systemPrompt) {
+          messages.push({ role: 'system', content: systemPrompt });
+        }
+        messages.push({ role: 'user', content: row.input });
+
+        // Make the API call (non-streaming)
+        const apiKey = process.env.OPENAI_API_KEY || 'ollama';
+        const baseUrl = process.env.OPENAI_BASE_URL || 'http://localhost:11434/v1';
+
+        const response = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey !== 'ollama' ? { Authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify({
+            model,
+            messages,
+            temperature,
+            max_tokens: maxTokens,
+            stream: false,
+          }),
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`API error ${response.status}: ${errorText}`);
+        }
+
+        const apiResponse = await response.json() as {
+          choices: Array<{ message: { content: string }; finish_reason?: string }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+        };
+
+        const output = apiResponse.choices[0]?.message?.content ?? '';
+        const latencyMs = Date.now() - startTime;
+
+        // Extract token count from API response or estimate
+        const tokenCount = apiResponse.usage?.completion_tokens
+          ?? Math.ceil(output.length / 4);
+
+        const result: TestRunResult = {
           id,
           testSetId,
           promptId,
@@ -249,12 +356,19 @@ export class ComparisonEngine {
           tokenCount,
           latencyMs,
           createdAt,
-        });
+        };
+
+        results.push(result);
+
+        // Notify callback
+        if (options.onResult) {
+          options.onResult(result);
+        }
       } catch (error) {
         const latencyMs = Date.now() - startTime;
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
-        results.push({
+        const result: TestRunResult = {
           id,
           testSetId,
           promptId,
@@ -265,15 +379,24 @@ export class ComparisonEngine {
           latencyMs,
           error: errorMessage,
           createdAt,
-        });
+        };
+
+        results.push(result);
+
+        // Notify callback even on error
+        if (options.onResult) {
+          options.onResult(result);
+        }
       }
     }
 
     return results;
   }
 
+  // ─── Test set management ──────────────────────────────────────────────────
+
   /**
-   * Create a test set.
+   * Create a test set with the given inputs.
    */
   createTestSet(data: TestSetCreate): TestSet {
     const conn = this.db.connection;
@@ -304,7 +427,7 @@ export class ComparisonEngine {
   }
 
   /**
-   * Get a test set by ID.
+   * Get a test set by ID, including its inputs.
    */
   getTestSet(id: string): TestSet | undefined {
     const conn = this.db.connection;
@@ -335,7 +458,7 @@ export class ComparisonEngine {
   }
 
   /**
-   * List all test sets.
+   * List all test sets with their input counts.
    */
   listTestSets(): TestSet[] {
     const conn = this.db.connection;
