@@ -1,7 +1,115 @@
+/**
+ * OpenAI-compatible client for PromptSentry Workbench.
+ * Supports streaming and non-streaming execution against any
+ * OpenAI-compatible endpoint (Ollama, vLLM, OpenAI, etc.).
+ */
 import OpenAI from 'openai';
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTokenLogprob,
+  ChatCompletionTopLogprob,
+} from 'openai/resources';
 import crypto from 'node:crypto';
-import type { APIConfig, PromptRunCreate } from './types.js';
+import type {
+  APIConfig,
+  PromptRun,
+  PromptRunCreate,
+} from './types.js';
 import type { DB } from './db.js';
+
+// ─── Response types ──────────────────────────────────────────────────────────
+
+/** Token logprob info from OpenAI-compatible API */
+export interface TokenLogprobInfo {
+  token: string;
+  logprob: number;
+  bytes?: number[];
+  topLogprobs: Array<{ token: string; logprob: number }>;
+}
+
+/** Full response metadata from the API */
+export interface APIResponseMetadata {
+  id: string;
+  model: string;
+  createdAt: string;
+  /** Token usage from the API (if available) */
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  /** Token logprobs (if requested) */
+  tokenLogprobs?: TokenLogprobInfo[];
+  /** Stop reason from the API */
+  stopReason?: string;
+}
+
+/** Result of a non-streaming execution */
+export interface ExecuteResult {
+  run: PromptRunCreate & {
+    tokenCount: number;
+    latencyMs: number;
+    cost?: number;
+  };
+  output: string;
+  metadata: APIResponseMetadata;
+}
+
+/** Callback for streaming chunks */
+export type StreamChunkCallback = (
+  chunk: string,
+  cumulative: string,
+  metadata: APIResponseMetadata,
+) => void;
+
+/** Callback for streaming errors */
+export type StreamErrorCallback = (error: Error) => void;
+
+/** Callback for streaming completion */
+export type StreamCompleteCallback = (
+  output: string,
+  metadata: APIResponseMetadata,
+) => void;
+
+/** Options for streaming execution */
+export interface StreamOptions {
+  /** Called for each chunk received */
+  onChunk?: StreamChunkCallback;
+  /** Called when an error occurs */
+  onError?: StreamErrorCallback;
+  /** Called when the stream completes */
+  onComplete?: StreamCompleteCallback;
+  /** Abort the stream with this controller */
+  signal?: AbortSignal;
+  /** Whether to save the run to the DB after streaming */
+  saveRun?: boolean;
+}
+
+/** Options for non-streaming execution */
+export interface ExecuteOptions {
+  /** Whether to save the run to the DB after execution */
+  saveRun?: boolean;
+}
+
+/** Extra parameters supported by OpenAI-compatible APIs */
+export interface ExtraParams {
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stop?: string | string[];
+  seed?: number;
+  logprobs?: boolean;
+  topLogprobs?: number;
+  responseFormat?: { type: 'json_object' | 'text' };
+  n?: number;
+}
+
+/** Extended prompt run data with extra params */
+export interface PromptRunWithExtraParams extends PromptRunCreate {
+  extraParams?: ExtraParams;
+}
+
+// ─── OpenAIClient ────────────────────────────────────────────────────────────
 
 export class OpenAIClient {
   private openai: OpenAI;
@@ -11,49 +119,68 @@ export class OpenAIClient {
   constructor(db: DB, config: APIConfig) {
     this.db = db;
     this.config = config;
+    // OpenAI SDK requires an API key even for local endpoints.
+    // Use a dummy key for local endpoints (Ollama, vLLM, etc.)
+    const apiKey = config.apiKey || 'ollama';
     this.openai = new OpenAI({
       baseURL: config.baseUrl,
-      apiKey: config.apiKey,
-      // Don't throw on non-200 responses - let the caller handle errors
+      apiKey,
       defaultHeaders: config.apiKey
         ? { Authorization: `Bearer ${config.apiKey}` }
         : undefined,
+      // Increase timeout for local models
+      maxRetries: 1,
     });
   }
 
+  // ─── Non-streaming execution ──────────────────────────────────────────────
+
   /**
    * Execute a prompt against the configured OpenAI-compatible endpoint.
-   * Returns the run result with metrics.
+   * Returns the run result with metrics and metadata.
    */
-  async execute(data: PromptRunCreate): Promise<{
-    run: PromptRunCreate & { tokenCount: number; latencyMs: number; cost?: number };
-    output: string;
-  }> {
+  async execute(
+    data: PromptRunWithExtraParams,
+    options: ExecuteOptions = {},
+  ): Promise<ExecuteResult> {
     const startTime = Date.now();
 
     try {
-      const messages: OpenAI.ChatCompletionMessageParam[] = [];
-
-      // Add system prompt if present
-      if (data.systemPrompt) {
-        messages.push({ role: 'system', content: data.systemPrompt });
-      }
-
-      // Add user message with the input
-      messages.push({ role: 'user', content: data.input });
+      const messages = this.buildMessages(data);
 
       const completion = await this.openai.chat.completions.create({
         model: data.model,
         messages,
         temperature: data.temperature,
         max_tokens: data.maxTokens,
+        ...this.buildExtraParams(data),
       });
 
       const output = completion.choices[0]?.message?.content ?? '';
       const latencyMs = Date.now() - startTime;
 
-      // Estimate token count from the response
-      const tokenCount = this.estimateTokenCount(output);
+      // Extract token usage from API response
+      const usage = completion.usage;
+      const tokenCount = usage
+        ? usage.completion_tokens ?? this.estimateTokenCount(output)
+        : this.estimateTokenCount(output);
+
+      // Extract metadata
+      const metadata: APIResponseMetadata = {
+        id: completion.id,
+        model: completion.model,
+        createdAt: completion.created
+          ? new Date(completion.created * 1000).toISOString()
+          : new Date().toISOString(),
+        usage: usage
+          ? {
+              promptTokens: usage.prompt_tokens ?? 0,
+              completionTokens: usage.completion_tokens ?? 0,
+              totalTokens: usage.total_tokens ?? 0,
+            }
+          : undefined,
+        stopReason: completion.choices[0]?.finish_reason ?? undefined,
+      };
 
       // Estimate cost (rough approximation)
       const cost = this.estimateCost(data.model, tokenCount);
@@ -65,38 +192,53 @@ export class OpenAIClient {
         cost,
       };
 
-      return { run, output };
+      // Save to DB if requested
+      if (options.saveRun) {
+        await this.saveRun(run, output);
+      }
+
+      return { run, output, metadata };
     } catch (error) {
       const latencyMs = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
+      const run = {
+        ...data,
+        tokenCount: 0,
+        latencyMs,
+        error: errorMessage,
+      };
+
+      if (options.saveRun) {
+        await this.saveRun(run, '');
+      }
+
       return {
-        run: {
-          ...data,
-          tokenCount: 0,
-          latencyMs,
-          error: errorMessage,
-        },
+        run,
         output: '',
+        metadata: {
+          id: crypto.randomUUID(),
+          model: data.model,
+          createdAt: new Date().toISOString(),
+        },
       };
     }
   }
 
   /**
    * Execute a prompt with streaming response.
-   * Yields chunks as they arrive.
+   * Yields chunks as they arrive and calls callbacks.
    */
-  async *executeStream(data: PromptRunCreate): AsyncGenerator<string, void, unknown> {
+  async executeStream(
+    data: PromptRunWithExtraParams,
+    options: StreamOptions = {},
+  ): Promise<{ output: string; metadata: APIResponseMetadata }> {
     const startTime = Date.now();
+    let fullOutput = '';
+    let metadata: APIResponseMetadata | undefined;
 
     try {
-      const messages: OpenAI.ChatCompletionMessageParam[] = [];
-
-      if (data.systemPrompt) {
-        messages.push({ role: 'system', content: data.systemPrompt });
-      }
-
-      messages.push({ role: 'user', content: data.input });
+      const messages = this.buildMessages(data);
 
       const stream = await this.openai.chat.completions.create({
         model: data.model,
@@ -104,48 +246,356 @@ export class OpenAIClient {
         temperature: data.temperature,
         max_tokens: data.maxTokens,
         stream: true,
+        ...this.buildExtraParams(data),
       });
 
-      let fullOutput = '';
+      let completionId = '';
+      let completionModel = '';
+      let completionCreated = 0;
+      let promptTokens = 0;
+      let completionTokens = 0;
+      let totalTokens = 0;
+      let stopReason: string | undefined;
+
+      for await (const chunk of stream) {
+        // Abort if signal is set
+        if (options.signal?.aborted) {
+          break;
+        }
+
+        const content = chunk.choices[0]?.delta?.content ?? '';
+        if (content) {
+          fullOutput += content;
+          if (options.onChunk) {
+            options.onChunk(content, fullOutput, this.buildPartialMetadata(chunk));
+          }
+        }
+
+        // Capture metadata from first chunk
+        if (!completionId && chunk.id) {
+          completionId = chunk.id;
+          completionModel = chunk.model ?? data.model;
+          completionCreated = chunk.created ?? 0;
+        }
+
+        // Accumulate token usage from last chunk
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens ?? promptTokens;
+          completionTokens = chunk.usage.completion_tokens ?? completionTokens;
+          totalTokens = chunk.usage.total_tokens ?? totalTokens;
+        }
+
+        // Capture stop reason from last chunk
+        if (chunk.choices[0]?.finish_reason) {
+          stopReason = chunk.choices[0].finish_reason;
+        }
+      }
+
+      const latencyMs = Date.now() - startTime;
+
+      metadata = {
+        id: completionId || crypto.randomUUID(),
+        model: completionModel || data.model,
+        createdAt: completionCreated
+          ? new Date(completionCreated * 1000).toISOString()
+          : new Date().toISOString(),
+        usage: totalTokens > 0
+          ? {
+              promptTokens,
+              completionTokens,
+              totalTokens,
+            }
+          : undefined,
+        stopReason,
+      };
+
+      const tokenCount = metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput);
+      const cost = this.estimateCost(data.model, tokenCount);
+
+      // Save to DB if requested
+      if (options.saveRun !== false) {
+        await this.saveRun(
+          {
+            ...data,
+            tokenCount,
+            latencyMs,
+            cost,
+          },
+          fullOutput,
+        );
+      }
+
+      if (options.onComplete) {
+        options.onComplete(fullOutput, metadata);
+      }
+
+      return { output: fullOutput, metadata };
+    } catch (error) {
+      const latencyMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      if (options.onError) {
+        options.onError(new Error(errorMessage));
+      }
+
+      // Save error run
+      await this.saveRun(
+        {
+          ...data,
+          tokenCount: 0,
+          latencyMs,
+          error: errorMessage,
+        },
+        '',
+      );
+
+      metadata = {
+        id: crypto.randomUUID(),
+        model: data.model,
+        createdAt: new Date().toISOString(),
+      };
+
+      return { output: fullOutput, metadata };
+    }
+  }
+
+  /**
+   * Execute a prompt and return a ReadableStream of chunks.
+   * Useful for programmatic consumption.
+   */
+  async *executeStreamAsync(data: PromptRunWithExtraParams): AsyncGenerator<
+    { chunk: string; cumulative: string; metadata: APIResponseMetadata },
+    void,
+    unknown
+  > {
+    const startTime = Date.now();
+    let fullOutput = '';
+    let metadata: APIResponseMetadata | undefined;
+
+    try {
+      const messages = this.buildMessages(data);
+
+      const stream = await this.openai.chat.completions.create({
+        model: data.model,
+        messages,
+        temperature: data.temperature,
+        max_tokens: data.maxTokens,
+        stream: true,
+        ...this.buildExtraParams(data),
+      });
+
+      let completionId = '';
+      let completionModel = '';
+      let completionCreated = 0;
+      let promptTokens = 0;
+      let completionTokens = 0;
+      let totalTokens = 0;
+      let stopReason: string | undefined;
 
       for await (const chunk of stream) {
         const content = chunk.choices[0]?.delta?.content ?? '';
         if (content) {
           fullOutput += content;
-          yield content;
+        }
+
+        if (!completionId && chunk.id) {
+          completionId = chunk.id;
+          completionModel = chunk.model ?? data.model;
+          completionCreated = chunk.created ?? 0;
+        }
+
+        if (chunk.usage) {
+          promptTokens = chunk.usage.prompt_tokens ?? promptTokens;
+          completionTokens = chunk.usage.completion_tokens ?? completionTokens;
+          totalTokens = chunk.usage.total_tokens ?? totalTokens;
+        }
+
+        if (chunk.choices[0]?.finish_reason) {
+          stopReason = chunk.choices[0].finish_reason;
+        }
+
+        if (content) {
+          metadata = {
+            id: completionId || crypto.randomUUID(),
+            model: completionModel || data.model,
+            createdAt: completionCreated
+              ? new Date(completionCreated * 1000).toISOString()
+              : new Date().toISOString(),
+            usage: totalTokens > 0
+              ? { promptTokens, completionTokens, totalTokens }
+              : undefined,
+            stopReason,
+          };
+          yield { chunk: content, cumulative: fullOutput, metadata };
         }
       }
 
-      const latencyMs = Date.now() - startTime;
-      const tokenCount = this.estimateTokenCount(fullOutput);
-      const cost = this.estimateCost(data.model, tokenCount);
+      // Final metadata with complete usage
+      metadata = {
+        id: completionId || crypto.randomUUID(),
+        model: completionModel || data.model,
+        createdAt: completionCreated
+          ? new Date(completionCreated * 1000).toISOString()
+          : new Date().toISOString(),
+        usage: totalTokens > 0
+          ? { promptTokens, completionTokens, totalTokens }
+          : undefined,
+        stopReason,
+      };
 
-      // Save the run to the database
-      await this.saveRun({
-        ...data,
-        tokenCount,
+      // Save to DB
+      const streamLatencyMs = Date.now() - startTime;
+      await this.saveRun(
+        {
+          ...data,
+          tokenCount: metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput),
+          latencyMs: streamLatencyMs,
+          cost: this.estimateCost(data.model, metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput)),
+        },
+        fullOutput,
+      );
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      await this.saveRun(
+        { ...data, tokenCount: 0, latencyMs: 0, error: errorMessage },
+        '',
+      );
+    }
+  }
+
+  // ─── Model listing ────────────────────────────────────────────────────────
+
+  /**
+   * List available models from the configured endpoint.
+   */
+  async listModels(): Promise<
+    Array<{ id: string; object: string; created: number; ownedBy: string }>
+  > {
+    const response = await this.openai.models.list();
+    return response.data;
+  }
+
+  /**
+   * Get a specific model by ID.
+   */
+  async getModel(modelId: string): Promise<
+    | { id: string; object: string; created: number; ownedBy: string }
+    | undefined
+  > {
+    try {
+      const model = await this.openai.models.retrieve(modelId);
+      return model;
+    } catch {
+      return undefined;
+    }
+  }
+
+  // ─── Health check ─────────────────────────────────────────────────────────
+
+  /**
+   * Check if the API endpoint is reachable.
+   */
+  async healthCheck(): Promise<{
+    status: 'ok' | 'error';
+    message?: string;
+    modelCount?: number;
+    latencyMs?: number;
+  }> {
+    const startTime = Date.now();
+    try {
+      const models = await this.listModels();
+      const latencyMs = Date.now() - startTime;
+      return {
+        status: 'ok',
+        modelCount: models.length,
         latencyMs,
-        cost,
-      }, fullOutput);
+      };
     } catch (error) {
       const latencyMs = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-      // Save error run
-      await this.saveRun({
-        ...data,
-        tokenCount: 0,
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      return {
+        status: 'error',
+        message,
         latencyMs,
-        error: errorMessage,
-      }, '');
+      };
     }
+  }
+
+  // ─── Configuration ────────────────────────────────────────────────────────
+
+  /**
+   * Get the current API configuration.
+   */
+  getConfig(): APIConfig {
+    return this.config;
+  }
+
+  /**
+   * Update the API configuration.
+   */
+  updateConfig(config: APIConfig): void {
+    this.config = config;
+    // OpenAI SDK requires an API key even for local endpoints.
+    const apiKey = config.apiKey || 'ollama';
+    this.openai = new OpenAI({
+      baseURL: config.baseUrl,
+      apiKey,
+      defaultHeaders: config.apiKey
+        ? { Authorization: `Bearer ${config.apiKey}` }
+        : undefined,
+      maxRetries: 1,
+    });
+  }
+
+  // ─── Private helpers ──────────────────────────────────────────────────────
+
+  /**
+   * Build the messages array from prompt data.
+   */
+  private buildMessages(data: PromptRunWithExtraParams): ChatCompletionMessageParam[] {
+    const messages: ChatCompletionMessageParam[] = [];
+
+    if (data.systemPrompt) {
+      messages.push({ role: 'system', content: data.systemPrompt });
+    }
+
+    messages.push({ role: 'user', content: data.input });
+
+    return messages;
+  }
+
+  /**
+   * Build extra parameters for the API call.
+   */
+  private buildExtraParams(data: PromptRunWithExtraParams): Partial<ExtraParams> {
+    if (!data.extraParams) return {};
+    return data.extraParams;
+  }
+
+  /**
+   * Build partial metadata from a stream chunk.
+   */
+  private buildPartialMetadata(
+    chunk: OpenAI.ChatCompletionChunk,
+  ): APIResponseMetadata {
+    return {
+      id: chunk.id ?? crypto.randomUUID(),
+      model: chunk.model ?? '',
+      createdAt: chunk.created
+        ? new Date(chunk.created * 1000).toISOString()
+        : new Date().toISOString(),
+    };
   }
 
   /**
    * Save a run to the database.
    */
   private async saveRun(
-    data: PromptRunCreate & { tokenCount: number; latencyMs: number; cost?: number },
+    data: PromptRunCreate & {
+      tokenCount: number;
+      latencyMs: number;
+      cost?: number;
+    },
     output: string,
   ): Promise<void> {
     const conn = this.db.connection;
@@ -199,26 +649,5 @@ export class OpenAIClient {
 
     const pricePerK = pricing[model.toLowerCase()] ?? 0.01;
     return Math.round((tokenCount / 1000) * pricePerK * 10000) / 10000;
-  }
-
-  /**
-   * Get the current API configuration.
-   */
-  getConfig(): APIConfig {
-    return this.config;
-  }
-
-  /**
-   * Update the API configuration.
-   */
-  updateConfig(config: APIConfig): void {
-    this.config = config;
-    this.openai = new OpenAI({
-      baseURL: config.baseUrl,
-      apiKey: config.apiKey,
-      defaultHeaders: config.apiKey
-        ? { Authorization: `Bearer ${config.apiKey}` }
-        : undefined,
-    });
   }
 }
