@@ -1,0 +1,90 @@
+{
+  "name": "@sentry-prompt/vscode",
+  "version": "0.1.0",
+  "displayName": "PromptSentry Workbench",
+  "description": "Local-first prompt workbench with git-style versioning and execution against OpenAI-compatible endpoints",
+  "publisher": "sentry-prompt",
+  "author": "Sentry",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sentry-prompt/promptsentry-workbench"
+  },
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "promptsentry.refresh",
+        "title": "PromptSentry: Refresh Prompts"
+      },
+      {
+        "command": "promptsentry.newPrompt",
+        "title": "PromptSentry: New Prompt"
+      },
+      {
+        "command": "promptsentry.runPrompt",
+        "title": "PromptSentry: Run Prompt"
+      },
+      {
+        "command": "promptsentry.compare",
+        "title": "PromptSentry: Compare Versions"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "promptsentryView",
+          "name": "PromptSentry"
+        }
+      ]
+    },
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "promptsentry.refresh"
+        },
+        {
+          "command": "promptsentry.newPrompt"
+        },
+        {
+          "command": "promptsentry.runPrompt"
+        },
+        {
+          "command": "promptsentry.compare"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "tsc -p ./ --noEmit && node esbuild.mjs",
+    "build": "tsc",
+    "lint": "eslint src/",
+    "test": "node --experimental-vm-modules node_modules/.bin/jest",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.95.0",
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.10",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "eslint": "^9.0.0",
+    "glob": "^11.0.0",
+    "minimatch": "^10.0.0",
+    "typescript": "^5.7.0",
+    "esbuild": "^0.24.0",
+    "@vscode/test-cli": "^0.0.10",
+    "@vscode/test-electron": "^2.4.0"
+  },
+  "dependencies": {
+    "@sentry-prompt/core": "workspace:*"
+  }
+}

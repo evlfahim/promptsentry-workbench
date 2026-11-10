@@ -1,0 +1,20 @@
+{
+  "name": "promptsentry-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first prompt workbench combining git-style versioning, execution against any OpenAI-compatible endpoint, and rich side-by-side diffs",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
