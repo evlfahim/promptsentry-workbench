@@ -8,6 +8,17 @@ import type {
   LexicalDiff,
 } from './types.js';
 
+export interface VersionDiffOptions {
+  /** Compare specific version IDs */
+  versionIdA?: string;
+  versionIdB?: string;
+  /** Compare by version numbers (1-based) */
+  versionNumberA?: number;
+  versionNumberB?: number;
+  /** Compare latest version against a specific version or number */
+  latestAgainst?: string | number;
+}
+
 // Row types from SQLite (snake_case column names)
 interface VersionRow {
   id: string;
@@ -298,5 +309,252 @@ export class VersioningEngine {
     });
 
     return mapPrompt(promptRow);
+  }
+
+  /**
+    * Rollback a prompt to a specific version by version number.
+    * Updates the prompt content and creates a new version.
+    */
+  rollbackToVersionNumber(
+    promptId: string,
+    versionNumber: number,
+  ): Prompt {
+    const versions = this.listVersions(promptId);
+    const version = versions.find(v => v.versionNumber === versionNumber);
+    if (!version) {
+      throw new Error(`Version ${versionNumber} not found for prompt ${promptId}`);
+    }
+    return this.rollbackToVersion(promptId, version.id);
+  }
+
+  /**
+    * Get a diff between two versions by their version numbers.
+    * Resolves version numbers to IDs and delegates to getVersionDiff.
+    */
+  getVersionDiffByNumber(
+    promptId: string,
+    versionNumberA: number,
+    versionNumberB: number,
+  ): LexicalDiff {
+    const versions = this.listVersions(promptId);
+    const versionA = versions.find(v => v.versionNumber === versionNumberA);
+    const versionB = versions.find(v => v.versionNumber === versionNumberB);
+
+    if (!versionA) {
+      throw new Error(`Version ${versionNumberA} not found for prompt ${promptId}`);
+    }
+    if (!versionB) {
+      throw new Error(`Version ${versionNumberB} not found for prompt ${promptId}`);
+    }
+
+    return this.getVersionDiff(versionA.id, versionB.id);
+  }
+
+  /**
+    * Get a diff between the latest version and a specific version.
+    */
+  getDiffAgainst(
+    promptId: string,
+    againstVersionNumber: number,
+  ): LexicalDiff {
+    const latest = this.getLatestVersion(promptId);
+    if (!latest) {
+      throw new Error(`No versions found for prompt ${promptId}`);
+    }
+
+    const versions = this.listVersions(promptId);
+    const against = versions.find(v => v.versionNumber === againstVersionNumber);
+    if (!against) {
+      throw new Error(`Version ${againstVersionNumber} not found for prompt ${promptId}`);
+    }
+
+    return this.getVersionDiff(against.id, latest.id);
+  }
+
+  /**
+    * Get diffs between all consecutive versions for a prompt.
+    * Returns an array of diffs from version 1→2, 2→3, etc.
+    */
+  getConsecutiveDiffs(promptId: string): Array<{
+    fromVersion: number;
+    toVersion: number;
+    diff: LexicalDiff;
+  }> {
+    const versions = this.listVersions(promptId);
+    if (versions.length < 2) {
+      return [];
+    }
+
+    const diffs: Array<{
+      fromVersion: number;
+      toVersion: number;
+      diff: LexicalDiff;
+    }> = [];
+
+    for (let i = 0; i < versions.length - 1; i++) {
+      const diff = this.getVersionDiff(versions[i].id, versions[i + 1].id);
+      diffs.push({
+        fromVersion: versions[i].versionNumber,
+        toVersion: versions[i + 1].versionNumber,
+        diff,
+      });
+    }
+
+    return diffs;
+  }
+
+  /**
+    * Get a compact diff summary (stats only) between two versions.
+    */
+  getVersionDiffSummary(versionIdA: string, versionIdB: string): {
+    additions: string;
+    deletions: string;
+    addedLines: number;
+    deletedLines: number;
+    commonLines: number;
+    addedChars: number;
+    deletedChars: number;
+    commonChars: number;
+  } {
+    const conn = this.db.connection;
+
+    const rowA = conn
+      .prepare(`SELECT content FROM prompt_versions WHERE id = ?`)
+      .get(versionIdA) as { content: string } | undefined;
+
+    const rowB = conn
+      .prepare(`SELECT content FROM prompt_versions WHERE id = ?`)
+      .get(versionIdB) as { content: string } | undefined;
+
+    if (!rowA || !rowB) {
+      throw new Error(`One or both versions not found`);
+    }
+
+    const diffResult = diffLines(rowA.content, rowB.content);
+
+    let addedLines = 0;
+    let deletedLines = 0;
+    let commonLines = 0;
+    let addedChars = 0;
+    let deletedChars = 0;
+    let commonChars = 0;
+
+    const additionsArr: string[] = [];
+    const deletionsArr: string[] = [];
+
+    for (const part of diffResult) {
+      if (part.added) {
+        addedLines++;
+        addedChars += part.value.length;
+        additionsArr.push(part.value);
+      } else if (part.removed) {
+        deletedLines++;
+        deletedChars += part.value.length;
+        deletionsArr.push(part.value);
+      } else {
+        commonLines++;
+        commonChars += part.value.length;
+      }
+    }
+
+    return {
+      additions: additionsArr.join(''),
+      deletions: deletionsArr.join(''),
+      addedLines,
+      deletedLines,
+      commonLines,
+      addedChars,
+      deletedChars,
+      commonChars,
+    };
+  }
+
+  /**
+    * Get a diff summary by version numbers.
+    */
+  getVersionDiffSummaryByNumber(
+    promptId: string,
+    versionNumberA: number,
+    versionNumberB: number,
+  ) {
+    const versions = this.listVersions(promptId);
+    const versionA = versions.find(v => v.versionNumber === versionNumberA);
+    const versionB = versions.find(v => v.versionNumber === versionNumberB);
+
+    if (!versionA) {
+      throw new Error(`Version ${versionNumberA} not found for prompt ${promptId}`);
+    }
+    if (!versionB) {
+      throw new Error(`Version ${versionNumberB} not found for prompt ${promptId}`);
+    }
+
+    return this.getVersionDiffSummary(versionA.id, versionB.id);
+  }
+
+  /**
+    * Get version history with metadata for a prompt.
+    */
+  getVersionHistory(promptId: string): Array<{
+    versionNumber: number;
+    contentHash: string;
+    commitMessage?: string;
+    createdAt: string;
+    contentLength: number;
+  }> {
+    const versions = this.listVersions(promptId);
+    return versions.map(v => ({
+      versionNumber: v.versionNumber,
+      contentHash: v.contentHash,
+      commitMessage: v.commitMessage,
+      createdAt: v.createdAt,
+      contentLength: v.content.length,
+    }));
+  }
+
+  /**
+    * Check if two versions have the same content (by hash).
+    */
+  areVersionsEqual(versionIdA: string, versionIdB: string): boolean {
+    const conn = this.db.connection;
+
+    const rowA = conn
+      .prepare(`SELECT content_hash FROM prompt_versions WHERE id = ?`)
+      .get(versionIdA) as { content_hash: string } | undefined;
+
+    const rowB = conn
+      .prepare(`SELECT content_hash FROM prompt_versions WHERE id = ?`)
+      .get(versionIdB) as { content_hash: string } | undefined;
+
+    if (!rowA || !rowB) {
+      throw new Error(`One or both versions not found`);
+    }
+
+    return rowA.content_hash === rowB.content_hash;
+  }
+
+  /**
+    * Get the version number of a version by its ID.
+    */
+  getVersionNumber(versionId: string): number | undefined {
+    const conn = this.db.connection;
+    const row = conn
+      .prepare(`SELECT version_number FROM prompt_versions WHERE id = ?`)
+      .get(versionId) as { version_number: number } | undefined;
+
+    return row?.version_number;
+  }
+
+  /**
+    * Get the version ID for a specific version number.
+    */
+  getVersionIdByNumber(promptId: string, versionNumber: number): string | undefined {
+    const conn = this.db.connection;
+    const row = conn
+      .prepare(
+        `SELECT id FROM prompt_versions WHERE prompt_id = ? AND version_number = ?`,
+      )
+      .get(promptId, versionNumber) as { id: string } | undefined;
+
+    return row?.id;
   }
 }
