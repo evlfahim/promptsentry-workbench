@@ -10,7 +10,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@sentry-prompt/core": "workspace:*",
+    "@sentry-prompt/core": "*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

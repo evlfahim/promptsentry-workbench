@@ -101,6 +101,7 @@ export interface TestSet {
 export type TestSetCreate = Omit<TestSet, 'id' | 'createdAt' | 'updatedAt'>;
 
 export interface TestRunResult {
+  id: string;
   testSetId: string;
   promptId: string;
   versionId: string;

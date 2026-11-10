@@ -85,6 +85,6 @@
     "@vscode/test-electron": "^2.4.0"
   },
   "dependencies": {
-    "@sentry-prompt/core": "workspace:*"
+    "@sentry-prompt/core": "*"
   }
 }

@@ -10,64 +10,70 @@ import type {
   TestSetCreate,
 } from './types';
 
+// Row types from SQLite (snake_case column names)
+interface PromptRunRow {
+  id: string;
+  prompt_id: string;
+  version_id: string;
+  input: string;
+  output: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  system_prompt: string | null;
+  token_count: number;
+  latency_ms: number;
+  cost: number | null;
+  created_at: string;
+  error: string | null;
+}
+
+function mapRun(row: PromptRunRow): PromptRun {
+  return {
+    id: row.id,
+    promptId: row.prompt_id,
+    versionId: row.version_id,
+    input: row.input,
+    output: row.output,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    tokenCount: row.token_count,
+    latencyMs: row.latency_ms,
+    cost: row.cost ?? undefined,
+    createdAt: row.created_at,
+    error: row.error ?? undefined,
+  };
+}
+
 export class ComparisonEngine {
   constructor(private db: DB) {}
 
   /**
    * Compare two runs side by side.
    */
-  compareRuns(runIdA: string, runIdB: string): Promise<ComparisonResult> {
+  compareRuns(runIdA: string, runIdB: string): ComparisonResult {
     const conn = this.db.connection;
 
     const rowA = conn
       .prepare(
         `SELECT id, prompt_id, version_id, input, output, model, temperature, max_tokens, system_prompt, token_count, latency_ms, cost, created_at, error FROM prompt_runs WHERE id = ?`,
       )
-      .get(runIdA) as (PromptRun & { system_prompt: string | null }) | undefined;
+      .get(runIdA) as PromptRunRow | undefined;
 
     const rowB = conn
       .prepare(
         `SELECT id, prompt_id, version_id, input, output, model, temperature, max_tokens, system_prompt, token_count, latency_ms, cost, created_at, error FROM prompt_runs WHERE id = ?`,
       )
-      .get(runIdB) as (PromptRun & { system_prompt: string | null }) | undefined;
+      .get(runIdB) as PromptRunRow | undefined;
 
     if (!rowA || !rowB) {
       throw new Error(`One or both runs not found`);
     }
 
-    const runA: PromptRun = {
-      id: rowA.id,
-      promptId: rowA.prompt_id,
-      versionId: rowA.version_id,
-      input: rowA.input,
-      output: rowA.output,
-      model: rowA.model,
-      temperature: rowA.temperature,
-      maxTokens: rowA.max_tokens,
-      systemPrompt: rowA.system_prompt ?? undefined,
-      tokenCount: rowA.token_count,
-      latencyMs: rowA.latency_ms,
-      cost: rowA.cost ?? undefined,
-      createdAt: rowA.created_at,
-      error: rowA.error ?? undefined,
-    };
-
-    const runB: PromptRun = {
-      id: rowB.id,
-      promptId: rowB.prompt_id,
-      versionId: rowB.version_id,
-      input: rowB.input,
-      output: rowB.output,
-      model: rowB.model,
-      temperature: rowB.temperature,
-      maxTokens: rowB.max_tokens,
-      systemPrompt: rowB.system_prompt ?? undefined,
-      tokenCount: rowB.token_count,
-      latencyMs: rowB.latency_ms,
-      cost: rowB.cost ?? undefined,
-      createdAt: rowB.created_at,
-      error: rowB.error ?? undefined,
-    };
+    const runA = mapRun(rowA);
+    const runB = mapRun(rowB);
 
     // Compute lexical diff
     const lexicalDiff = this.computeLexicalDiff(runA.output, runB.output);
@@ -269,7 +275,7 @@ export class ComparisonEngine {
   /**
    * Create a test set.
    */
-  createTestSet(data: TestSetCreate): Promise<TestSet> {
+  createTestSet(data: TestSetCreate): TestSet {
     const conn = this.db.connection;
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -300,14 +306,14 @@ export class ComparisonEngine {
   /**
    * Get a test set by ID.
    */
-  getTestSet(id: string): Promise<TestSet | undefined> {
+  getTestSet(id: string): TestSet | undefined {
     const conn = this.db.connection;
 
     const row = conn
       .prepare(
         `SELECT id, name, description, created_at, updated_at FROM test_sets WHERE id = ?`,
       )
-      .get(id) as (TestSet & { description: string | null }) | undefined;
+      .get(id) as { id: string; name: string; description: string | null; created_at: string; updated_at: string } | undefined;
 
     if (!row) return undefined;
 
@@ -331,16 +337,16 @@ export class ComparisonEngine {
   /**
    * List all test sets.
    */
-  listTestSets(): Promise<TestSet[]> {
+  listTestSets(): TestSet[] {
     const conn = this.db.connection;
 
     const rows = conn
       .prepare(
         `SELECT id, name, description, created_at, updated_at FROM test_sets ORDER BY created_at DESC`,
       )
-      .all() as (TestSet & { description: string | null })[];
+      .all() as { id: string; name: string; description: string | null; created_at: string; updated_at: string }[];
 
-    return Promise.all(rows.map(async (row) => {
+    return rows.map((row) => {
       const inputRows = conn
         .prepare(
           `SELECT input FROM test_set_inputs WHERE test_set_id = ?`,
@@ -355,8 +361,6 @@ export class ComparisonEngine {
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
-    }));
+    });
   }
 }
-
-import crypto from 'node:crypto';

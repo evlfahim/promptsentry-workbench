@@ -8,6 +8,63 @@ import type {
   LexicalDiff,
 } from './types';
 
+// Row types from SQLite (snake_case column names)
+interface VersionRow {
+  id: string;
+  prompt_id: string;
+  content: string;
+  model: string;
+  temperature: number;
+  max_tokens: number;
+  system_prompt: string | null;
+  content_hash: string;
+  version_number: number;
+  created_at: string;
+  commit_message: string | null;
+}
+
+interface PromptRow {
+  id: string;
+  name: string;
+  content: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  system_prompt: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function mapVersion(row: VersionRow): PromptVersion {
+  return {
+    id: row.id,
+    promptId: row.prompt_id,
+    content: row.content,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    contentHash: row.content_hash,
+    versionNumber: row.version_number,
+    createdAt: row.created_at,
+    commitMessage: row.commit_message ?? undefined,
+  };
+}
+
+function mapPrompt(row: PromptRow): Prompt {
+  return {
+    id: row.id,
+    name: row.name,
+    content: row.content,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.maxTokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export class VersioningEngine {
   constructor(private db: DB) {}
 
@@ -18,7 +75,7 @@ export class VersioningEngine {
   createVersion(
     promptId: string,
     data: PromptVersionCreate,
-  ): Promise<PromptVersion | undefined> {
+  ): PromptVersion | undefined {
     const conn = this.db.connection;
     const contentHash = this.computeHash(data.content);
 
@@ -81,83 +138,45 @@ export class VersioningEngine {
   /**
    * Get a version by ID.
    */
-  getVersion(id: string): Promise<PromptVersion | undefined> {
+  getVersion(id: string): PromptVersion | undefined {
     const conn = this.db.connection;
     const row = conn
       .prepare(
         `SELECT id, prompt_id, content, model, temperature, max_tokens, system_prompt, content_hash, version_number, created_at, commit_message FROM prompt_versions WHERE id = ?`,
       )
-      .get(id) as PromptVersion | undefined;
+      .get(id) as VersionRow | undefined;
 
     if (!row) return undefined;
-
-    return {
-      id: row.id,
-      promptId: row.prompt_id,
-      content: row.content,
-      model: row.model,
-      temperature: row.temperature,
-      maxTokens: row.max_tokens,
-      systemPrompt: row.system_prompt ?? undefined,
-      contentHash: row.content_hash,
-      versionNumber: row.version_number,
-      createdAt: row.created_at,
-      commitMessage: row.commit_message ?? undefined,
-    };
+    return mapVersion(row);
   }
 
   /**
    * List all versions for a prompt, ordered by version number.
    */
-  listVersions(promptId: string): Promise<PromptVersion[]> {
+  listVersions(promptId: string): PromptVersion[] {
     const conn = this.db.connection;
     const rows = conn
       .prepare(
         `SELECT id, prompt_id, content, model, temperature, max_tokens, system_prompt, content_hash, version_number, created_at, commit_message FROM prompt_versions WHERE prompt_id = ? ORDER BY version_number ASC`,
       )
-      .all(promptId) as (PromptVersion & { system_prompt: string | null; commit_message: string | null })[];
+      .all(promptId) as VersionRow[];
 
-    return rows.map((row) => ({
-      id: row.id,
-      promptId: row.prompt_id,
-      content: row.content,
-      model: row.model,
-      temperature: row.temperature,
-      maxTokens: row.max_tokens,
-      systemPrompt: row.system_prompt ?? undefined,
-      contentHash: row.content_hash,
-      versionNumber: row.version_number,
-      createdAt: row.created_at,
-      commitMessage: row.commit_message ?? undefined,
-    }));
+    return rows.map(mapVersion);
   }
 
   /**
    * Get the latest version for a prompt.
    */
-  getLatestVersion(promptId: string): Promise<PromptVersion | undefined> {
+  getLatestVersion(promptId: string): PromptVersion | undefined {
     const conn = this.db.connection;
     const row = conn
       .prepare(
         `SELECT id, prompt_id, content, model, temperature, max_tokens, system_prompt, content_hash, version_number, created_at, commit_message FROM prompt_versions WHERE prompt_id = ? ORDER BY version_number DESC LIMIT 1`,
       )
-      .get(promptId) as PromptVersion | undefined;
+      .get(promptId) as VersionRow | undefined;
 
     if (!row) return undefined;
-
-    return {
-      id: row.id,
-      promptId: row.prompt_id,
-      content: row.content,
-      model: row.model,
-      temperature: row.temperature,
-      maxTokens: row.max_tokens,
-      systemPrompt: row.system_prompt ?? undefined,
-      contentHash: row.content_hash,
-      versionNumber: row.version_number,
-      createdAt: row.created_at,
-      commitMessage: row.commit_message ?? undefined,
-    };
+    return mapVersion(row);
   }
 
   /**
@@ -170,7 +189,7 @@ export class VersioningEngine {
   /**
    * Get a lexical diff between two versions.
    */
-  getVersionDiff(versionIdA: string, versionIdB: string): Promise<LexicalDiff> {
+  getVersionDiff(versionIdA: string, versionIdB: string): LexicalDiff {
     const conn = this.db.connection;
 
     const rowA = conn
@@ -230,10 +249,10 @@ export class VersioningEngine {
    * Rollback a prompt to a specific version.
    * Updates the prompt content and creates a new version.
    */
-  async rollbackToVersion(
+  rollbackToVersion(
     promptId: string,
     versionId: string,
-  ): Promise<Prompt> {
+  ): Prompt {
     const conn = this.db.connection;
 
     const version = this.getVersion(versionId);
@@ -244,11 +263,9 @@ export class VersioningEngine {
     const now = new Date().toISOString();
 
     // Update the prompt
-    const updatePrompt = conn.prepare(
+    conn.prepare(
       `UPDATE prompts SET content = ?, model = ?, temperature = ?, maxTokens = ?, system_prompt = ?, updated_at = ? WHERE id = ?`,
-    );
-
-    updatePrompt.run(
+    ).run(
       version.content,
       version.model,
       version.temperature,
@@ -259,13 +276,19 @@ export class VersioningEngine {
     );
 
     // Get the updated prompt
-    const prompt = this.getPrompt(promptId);
-    if (!prompt) {
+    const promptRow = conn
+      .prepare(
+        `SELECT id, name, content, model, temperature, maxTokens, system_prompt, created_at, updated_at FROM prompts WHERE id = ?`,
+      )
+      .get(promptId) as PromptRow | undefined;
+
+    if (!promptRow) {
       throw new Error(`Prompt ${promptId} not found after rollback`);
     }
 
     // Create a new version with the rolled-back content
-    await this.createVersion(promptId, {
+    this.createVersion(promptId, {
+      promptId,
       content: version.content,
       model: version.model,
       temperature: version.temperature,
@@ -274,32 +297,6 @@ export class VersioningEngine {
       commitMessage: `Rollback to version ${version.versionNumber}`,
     });
 
-    return prompt;
-  }
-
-  /**
-   * Get a prompt by ID.
-   */
-  private getPrompt(id: string): Promise<Prompt | undefined> {
-    const conn = this.db.connection;
-    const row = conn
-      .prepare(
-        `SELECT id, name, content, model, temperature, maxTokens, system_prompt, created_at, updated_at FROM prompts WHERE id = ?`,
-      )
-      .get(id) as Prompt | undefined;
-
-    if (!row) return undefined;
-
-    return {
-      id: row.id,
-      name: row.name,
-      content: row.content,
-      model: row.model,
-      temperature: row.temperature,
-      maxTokens: row.maxTokens,
-      systemPrompt: row.system_prompt ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
+    return mapPrompt(promptRow);
   }
 }

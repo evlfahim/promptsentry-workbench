@@ -21,13 +21,14 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
-    "openai": "^4.78.0",
-    "diff": "^7.0.0"
+    "diff": "^7.0.0",
+    "openai": "^4.78.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
     "@types/diff": "^6.0.0",
-    "jest": "^29.7.0",
     "@types/jest": "^29.5.14",
+    "jest": "^29.7.0",
     "ts-jest": "^29.2.5"
   }
 }
