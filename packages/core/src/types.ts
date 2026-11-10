@@ -60,10 +60,21 @@ export interface PromptRun {
   error?: string;
 }
 
-export type PromptRunCreate = Omit<
-  PromptRun,
-  'id' | 'tokenCount' | 'latencyMs' | 'cost' | 'createdAt'
->;
+export interface PromptRunCreate {
+  promptId: string;
+  versionId: string;
+  input: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  systemPrompt?: string;
+  output?: string;
+  error?: string;
+}
+
+export type PromptRunWithExtraParams = PromptRunCreate & {
+  extraParams?: ExtraParams;
+};
 
 // ─── Comparison ───────────────────────────────────────────────────────────────
 
@@ -115,6 +126,18 @@ export interface TestRunResult {
 }
 
 // ─── API Configuration ────────────────────────────────────────────────────────
+
+export interface ExtraParams {
+  topP?: number;
+  frequencyPenalty?: number;
+  presencePenalty?: number;
+  stop?: string | string[];
+  seed?: number;
+  logprobs?: boolean;
+  topLogprobs?: number;
+  responseFormat?: { type: 'json_object' | 'text' };
+  n?: number;
+}
 
 export interface APIConfig {
   baseUrl: string;

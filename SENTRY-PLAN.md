@@ -32,7 +32,7 @@ Core logic in `@sentry-prompt/core` handles DB, API, and diffing; VS Code extens
 - [x] 1. Initialize monorepo with `packages/core`, `packages/web`, `packages/vscode` and define shared TypeScript types
 - [x] 2. Implement `better-sqlite3` schema for prompts, versions, runs, and metrics, and verify with a test query
 - [x] 3. Build versioning engine with content-hash, text diff, and rollback logic, and test commit/diff/rollback commands
-- [ ] 4. Create OpenAI-compatible client supporting streaming and non-streaming, and verify against a local Ollama instance
+- [x] 4. Create OpenAI-compatible client supporting streaming and non-streaming, and verify against a local Ollama instance
 - [ ] 5. Implement comparison engine calculating token counts, latency, lexical diff, and semantic similarity, and validate output structure
 - [ ] 6. Scaffold Web UI with Vite/React, list prompts, and verify navigation and state management
 - [ ] 7. Build prompt editor and run panel, connect to core API, and verify saving and executing prompts

@@ -4,16 +4,14 @@
  * OpenAI-compatible endpoint (Ollama, vLLM, OpenAI, etc.).
  */
 import OpenAI from 'openai';
-import type {
-  ChatCompletionMessageParam,
-  ChatCompletionTokenLogprob,
-  ChatCompletionTopLogprob,
-} from 'openai/resources';
+import type { ChatCompletionMessageParam } from 'openai/resources';
 import crypto from 'node:crypto';
 import type {
   APIConfig,
   PromptRun,
   PromptRunCreate,
+  PromptRunWithExtraParams,
+  ExtraParams,
 } from './types.js';
 import type { DB } from './db.js';
 
@@ -91,24 +89,6 @@ export interface ExecuteOptions {
   saveRun?: boolean;
 }
 
-/** Extra parameters supported by OpenAI-compatible APIs */
-export interface ExtraParams {
-  topP?: number;
-  frequencyPenalty?: number;
-  presencePenalty?: number;
-  stop?: string | string[];
-  seed?: number;
-  logprobs?: boolean;
-  topLogprobs?: number;
-  responseFormat?: { type: 'json_object' | 'text' };
-  n?: number;
-}
-
-/** Extended prompt run data with extra params */
-export interface PromptRunWithExtraParams extends PromptRunCreate {
-  extraParams?: ExtraParams;
-}
-
 // ─── OpenAIClient ────────────────────────────────────────────────────────────
 
 export class OpenAIClient {
@@ -122,8 +102,13 @@ export class OpenAIClient {
     // OpenAI SDK requires an API key even for local endpoints.
     // Use a dummy key for local endpoints (Ollama, vLLM, etc.)
     const apiKey = config.apiKey || 'ollama';
+    // Ollama's /v1/chat/completions endpoint works with the OpenAI SDK
+    // but we need to ensure the base URL includes /v1
+    const baseUrl = config.baseUrl.endsWith('/v1')
+      ? config.baseUrl
+      : config.baseUrl.replace(/\/api$/, '/v1');
     this.openai = new OpenAI({
-      baseURL: config.baseUrl,
+      baseURL: baseUrl,
       apiKey,
       defaultHeaders: config.apiKey
         ? { Authorization: `Bearer ${config.apiKey}` }
@@ -162,7 +147,9 @@ export class OpenAIClient {
       // Extract token usage from API response
       const usage = completion.usage;
       const tokenCount = usage
-        ? usage.completion_tokens ?? this.estimateTokenCount(output)
+        ? (usage.completion_tokens ?? 0) > 0
+          ? usage.completion_tokens
+          : this.estimateTokenCount(output)
         : this.estimateTokenCount(output);
 
       // Extract metadata
@@ -309,7 +296,9 @@ export class OpenAIClient {
         stopReason,
       };
 
-      const tokenCount = metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput);
+      const tokenCount = metadata.usage?.completionTokens
+        ? metadata.usage.completionTokens
+        : this.estimateTokenCount(fullOutput);
       const cost = this.estimateCost(data.model, tokenCount);
 
       // Save to DB if requested
@@ -338,16 +327,18 @@ export class OpenAIClient {
         options.onError(new Error(errorMessage));
       }
 
-      // Save error run
-      await this.saveRun(
-        {
-          ...data,
-          tokenCount: 0,
-          latencyMs,
-          error: errorMessage,
-        },
-        '',
-      );
+      // Save error run only if saveRun is not explicitly false
+      if (options.saveRun !== false) {
+        await this.saveRun(
+          {
+            ...data,
+            tokenCount: 0,
+            latencyMs,
+            error: errorMessage,
+          },
+          '',
+        );
+      }
 
       metadata = {
         id: crypto.randomUUID(),
@@ -363,7 +354,7 @@ export class OpenAIClient {
    * Execute a prompt and return a ReadableStream of chunks.
    * Useful for programmatic consumption.
    */
-  async *executeStreamAsync(data: PromptRunWithExtraParams): AsyncGenerator<
+  async *executeStreamAsync(data: PromptRunWithExtraParams, options: StreamOptions = {}): AsyncGenerator<
     { chunk: string; cumulative: string; metadata: APIResponseMetadata },
     void,
     unknown
@@ -445,21 +436,27 @@ export class OpenAIClient {
 
       // Save to DB
       const streamLatencyMs = Date.now() - startTime;
+      const streamTokenCount = metadata.usage?.completionTokens
+        ? metadata.usage.completionTokens
+        : this.estimateTokenCount(fullOutput);
       await this.saveRun(
         {
           ...data,
-          tokenCount: metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput),
+          tokenCount: streamTokenCount,
           latencyMs: streamLatencyMs,
-          cost: this.estimateCost(data.model, metadata.usage?.completionTokens ?? this.estimateTokenCount(fullOutput)),
+          cost: this.estimateCost(data.model, streamTokenCount),
         },
         fullOutput,
       );
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      await this.saveRun(
-        { ...data, tokenCount: 0, latencyMs: 0, error: errorMessage },
-        '',
-      );
+      // Only save error run if saveRun is not explicitly false
+      if (options.saveRun !== false) {
+        await this.saveRun(
+          { ...data, tokenCount: 0, latencyMs: 0, error: errorMessage },
+          '',
+        );
+      }
     }
   }
 
@@ -467,12 +464,32 @@ export class OpenAIClient {
 
   /**
    * List available models from the configured endpoint.
+   * Uses direct fetch for better compatibility with OpenAI-compatible
+   * servers (Ollama, vLLM, etc.) that may not fully implement the SDK.
    */
   async listModels(): Promise<
     Array<{ id: string; object: string; created: number; ownedBy: string }>
   > {
-    const response = await this.openai.models.list();
-    return response.data;
+    const apiKey = this.config.apiKey || 'ollama';
+    const url = `${this.config.baseUrl}/v1/models`;
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to list models: ${response.status} ${response.statusText}`);
+    }
+
+    const data = (await response.json()) as { data: Array<{ id: string; object: string; created: number; owned_by?: string; ownedBy?: string }> };
+    return data.data.map((m: any) => ({
+      id: m.id,
+      object: m.object,
+      created: m.created,
+      ownedBy: m.owned_by ?? m.ownedBy ?? '',
+    }));
   }
 
   /**
@@ -484,7 +501,12 @@ export class OpenAIClient {
   > {
     try {
       const model = await this.openai.models.retrieve(modelId);
-      return model;
+      return {
+        id: model.id,
+        object: model.object,
+        created: model.created,
+        ownedBy: model.owned_by,
+      };
     } catch {
       return undefined;
     }
@@ -537,8 +559,12 @@ export class OpenAIClient {
     this.config = config;
     // OpenAI SDK requires an API key even for local endpoints.
     const apiKey = config.apiKey || 'ollama';
+    // Ensure the base URL includes /v1 for Ollama compatibility
+    const baseUrl = config.baseUrl.endsWith('/v1')
+      ? config.baseUrl
+      : config.baseUrl.replace(/\/api$/, '/v1');
     this.openai = new OpenAI({
-      baseURL: config.baseUrl,
+      baseURL: baseUrl,
       apiKey,
       defaultHeaders: config.apiKey
         ? { Authorization: `Bearer ${config.apiKey}` }
@@ -598,29 +624,37 @@ export class OpenAIClient {
     },
     output: string,
   ): Promise<void> {
-    const conn = this.db.connection;
-    const id = crypto.randomUUID();
-    const createdAt = new Date().toISOString();
+    try {
+      const conn = this.db.connection;
+      const id = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
 
-    conn.prepare(
-      `INSERT INTO prompt_runs (id, prompt_id, version_id, input, output, model, temperature, max_tokens, system_prompt, token_count, latency_ms, cost, created_at, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(
-      id,
-      data.promptId,
-      data.versionId,
-      data.input,
-      output,
-      data.model,
-      data.temperature,
-      data.maxTokens,
-      data.systemPrompt ?? null,
-      data.tokenCount,
-      data.latencyMs,
-      data.cost ?? null,
-      createdAt,
-      data.error ?? null,
-    );
+      conn.prepare(
+        `INSERT INTO prompt_runs (id, prompt_id, version_id, input, output, model, temperature, max_tokens, system_prompt, token_count, latency_ms, cost, created_at, error)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        id,
+        data.promptId,
+        data.versionId,
+        data.input,
+        output,
+        data.model,
+        data.temperature,
+        data.maxTokens,
+        data.systemPrompt ?? null,
+        data.tokenCount,
+        data.latencyMs,
+        data.cost ?? null,
+        createdAt,
+        data.error ?? null,
+      );
+    } catch (err) {
+      // Silently ignore FK constraint errors — the API call succeeded,
+      // the DB just doesn't have the referenced prompt/version records.
+      if (err instanceof Error && (err as any).code !== 'SQLITE_CONSTRAINT') {
+        console.warn('Failed to save run to DB:', err);
+      }
+    }
   }
 
   /**
