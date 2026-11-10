@@ -12,9 +12,14 @@
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
+    "@types/uuid": "^10.0.0",
     "typescript": "^5.7.0"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "react-router-dom": "^7.18.5",
+    "uuid": "^14.0.3"
   }
 }

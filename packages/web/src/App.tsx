@@ -1,18 +1,38 @@
-import React from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { StoreProvider } from './store';
+import { Navigation } from './components/Navigation';
+import { Dashboard } from './views/Dashboard';
+import { PromptsList } from './views/PromptsList';
+import { PromptDetail } from './views/PromptDetail';
+import { ApiConfig } from './views/ApiConfig';
 
 export function App() {
   return (
-    <div style={{ padding: 20, fontFamily: 'sans-serif' }}>
-      <h1>PromptSentry Workbench</h1>
-      <p>Local-first prompt workbench with git-style versioning.</p>
-      <section>
-        <h2>Prompts</h2>
-        <p>No prompts yet. Create one to get started.</p>
-      </section>
-      <section>
-        <h2>Versions</h2>
-        <p>No versions yet.</p>
-      </section>
-    </div>
+    <StoreProvider>
+      <BrowserRouter>
+        <div style={styles.app}>
+          <Navigation />
+          <main style={styles.main}>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/prompts" element={<PromptsList />} />
+              <Route path="/prompts/:id" element={<PromptDetail />} />
+              <Route path="/api-config" element={<ApiConfig />} />
+            </Routes>
+          </main>
+        </div>
+      </BrowserRouter>
+    </StoreProvider>
   );
 }
+
+const styles: Record<string, React.CSSProperties> = {
+  app: {
+    minHeight: '100vh',
+    backgroundColor: '#0d0d1a',
+    color: '#e0e0e0',
+  },
+  main: {
+    minHeight: 'calc(100vh - 57px)',
+  },
+};
