@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import React, { type ReactNode, createContext, useReducer, useContext } from 'react';
 import type { Prompt, PromptVersion, PromptRun, APIConfig, TestSet } from '@sentry-prompt/core';
 
 // ─── Store State ──────────────────────────────────────────────────────────────
@@ -101,10 +101,10 @@ interface StoreContextType {
   dispatch: React.Dispatch<StoreAction>;
 }
 
-const StoreContext = React.createContext<StoreContextType | null>(null);
+const StoreContext = createContext<StoreContextType | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = React.useReducer(storeReducer, initialState);
+  const [state, dispatch] = useReducer(storeReducer, initialState);
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
       {children}
