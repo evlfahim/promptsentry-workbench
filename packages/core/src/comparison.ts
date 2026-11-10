@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { DB } from './db';
+import type { DB } from './db.js';
 import type {
   ComparisonResult,
   LexicalDiff,
@@ -8,7 +8,7 @@ import type {
   TestRunResult,
   TestSet,
   TestSetCreate,
-} from './types';
+} from './types.js';
 
 // Row types from SQLite (snake_case column names)
 interface PromptRunRow {

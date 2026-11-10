@@ -2,10 +2,10 @@
  * Integration test: verify core functionality end-to-end
  */
 import crypto from 'node:crypto';
-import { DB } from './db';
-import { VersioningEngine } from './versioning';
-import { ComparisonEngine } from './comparison';
-import type { PromptCreate, PromptVersionCreate } from './types';
+import { DB } from '../db.js';
+import { VersioningEngine } from '../versioning.js';
+import { ComparisonEngine } from '../comparison.js';
+import type { PromptCreate, PromptVersionCreate } from '../types.js';
 
 // Use an in-memory temp DB
 const testDbPath = crypto.randomUUID();
@@ -27,13 +27,14 @@ afterAll(() => {
 });
 
 describe('VersioningEngine', () => {
-  const promptId = crypto.randomUUID();
+  let promptId: string;
   const now = new Date().toISOString();
 
   beforeEach(() => {
+    promptId = crypto.randomUUID();
     const conn = db.connection;
     conn.prepare(
-      `INSERT INTO prompts (id, name, content, model, temperature, maxTokens, created_at, updated_at)
+      `INSERT OR REPLACE INTO prompts (id, name, content, model, temperature, maxTokens, created_at, updated_at)
        VALUES (?, 'Test Prompt', 'Hello world', 'gpt-4', 0.7, 1024, ?, ?)`,
     ).run(promptId, now, now);
   });
@@ -163,18 +164,29 @@ describe('VersioningEngine', () => {
 });
 
 describe('ComparisonEngine', () => {
-  const promptId = crypto.randomUUID();
-  const versionId = crypto.randomUUID();
+  let promptId: string;
+  let versionId: string;
   const now = new Date().toISOString();
 
   beforeEach(() => {
+    promptId = crypto.randomUUID();
+    versionId = crypto.randomUUID();
     const conn = db.connection;
+    // Clean up test sets from previous tests
+    conn.prepare(`DELETE FROM test_run_results`).run();
+    conn.prepare(`DELETE FROM test_set_inputs`).run();
+    conn.prepare(`DELETE FROM test_sets`).run();
+    // Clean up runs
+    conn.prepare(`DELETE FROM prompt_runs`).run();
+    // Clean up versions
+    conn.prepare(`DELETE FROM prompt_versions`).run();
+    // Insert fresh prompt
     conn.prepare(
-      `INSERT INTO prompts (id, name, content, model, temperature, maxTokens, created_at, updated_at)
+      `INSERT OR REPLACE INTO prompts (id, name, content, model, temperature, maxTokens, created_at, updated_at)
        VALUES (?, 'Test', 'Test', 'gpt-4', 0.7, 1024, ?, ?)`,
     ).run(promptId, now, now);
     conn.prepare(
-      `INSERT INTO prompt_versions (id, prompt_id, content, model, temperature, max_tokens, content_hash, version_number, created_at)
+      `INSERT OR REPLACE INTO prompt_versions (id, prompt_id, content, model, temperature, max_tokens, content_hash, version_number, created_at)
        VALUES (?, ?, 'Test', 'gpt-4', 0.7, 1024, 'abc', 1, ?)`,
     ).run(versionId, promptId, now);
   });

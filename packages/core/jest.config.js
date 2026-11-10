@@ -8,8 +8,17 @@ export default {
       'ts-jest',
       {
         useESM: true,
+        tsconfig: {
+          module: 'ESNext',
+          moduleResolution: 'bundler',
+          esModuleInterop: true,
+          allowSyntheticDefaultImports: true,
+        },
       },
     ],
+  },
+  moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   testMatch: ['**/__tests__/**/*.test.ts'],
   roots: ['<rootDir>/src'],

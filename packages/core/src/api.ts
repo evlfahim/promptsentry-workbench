@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import crypto from 'node:crypto';
-import type { APIConfig, PromptRunCreate } from './types';
-import type { DB } from './db';
+import type { APIConfig, PromptRunCreate } from './types.js';
+import type { DB } from './db.js';
 
 export class OpenAIClient {
   private openai: OpenAI;

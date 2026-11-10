@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import type { DatabaseConfig } from './types';
+import type { DatabaseConfig } from './types.js';
 
 export class DB {
   private db: Database.Database;

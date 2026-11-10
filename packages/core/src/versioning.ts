@@ -1,12 +1,12 @@
 import crypto from 'node:crypto';
 import { diffLines } from 'diff';
-import type { DB } from './db';
+import type { DB } from './db.js';
 import type {
   Prompt,
   PromptVersion,
   PromptVersionCreate,
   LexicalDiff,
-} from './types';
+} from './types.js';
 
 // Row types from SQLite (snake_case column names)
 interface VersionRow {
