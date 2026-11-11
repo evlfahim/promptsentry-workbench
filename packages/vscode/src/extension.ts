@@ -13,6 +13,8 @@ import {
   type PromptUpdate,
   type PromptVersionCreate,
   type PromptRunCreate,
+  type ComparisonResult,
+  type LexicalDiff,
 } from '@sentry-prompt/core';
 
 // ─── State ────────────────────────────────────────────────────────────────────
@@ -24,6 +26,7 @@ let comparisonEngine: ComparisonEngine | undefined;
 let treeView: vscode.TreeView<PromptTreeNode> | undefined;
 let treeDataProvider: PromptSentryTreeDataProvider | undefined;
 let webviewPanel: vscode.WebviewPanel | undefined;
+let apiConfig: APIConfig | undefined;
 
 // ─── Tree View Types ─────────────────────────────────────────────────────────
 
@@ -79,7 +82,7 @@ class PromptSentryTreeDataProvider implements vscode.TreeDataProvider<PromptTree
     }
 
     if (!element) {
-      // Root level: list all prompts
+      // Root level: list all prompts using core's DB method
       const prompts = await this.listPrompts();
       return prompts.map((p) => ({
         type: TreeNodeType.Prompt,
@@ -92,7 +95,7 @@ class PromptSentryTreeDataProvider implements vscode.TreeDataProvider<PromptTree
     }
 
     if (element.type === TreeNodeType.Prompt) {
-      // Prompt level: list versions
+      // Prompt level: list versions using core's VersioningEngine
       const versions = versioningEngine.listVersions(element.id);
       if (versions.length === 0) {
         return [
@@ -119,7 +122,7 @@ class PromptSentryTreeDataProvider implements vscode.TreeDataProvider<PromptTree
   }
 
   private async listPrompts(): Promise<Prompt[]> {
-    // Use the DB to list prompts
+    // Use the core DB's connection to list prompts
     const conn = db!.connection;
     const rows = conn.prepare('SELECT * FROM prompts ORDER BY updated_at DESC').all() as any[];
     return rows.map((row) => ({
@@ -154,6 +157,11 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
   panel.webview.onDidReceiveMessage(
     async (message: any) => {
       switch (message.type) {
+        case 'ready':
+          // Send initial API config
+          panel.webview.postMessage({ type: 'apiConfig', data: apiConfig });
+          break;
+
         case 'getPrompts': {
           if (!db) {
             panel.webview.postMessage({ type: 'prompts', data: [] });
@@ -251,6 +259,7 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
             panel.webview.postMessage({ type: 'versions', data: [] });
             return;
           }
+          // Use core's VersioningEngine to list versions
           const versions = versioningEngine.listVersions(message.promptId);
           panel.webview.postMessage({ type: 'versions', data: versions });
           break;
@@ -258,7 +267,8 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
 
         case 'createVersion': {
           try {
-            const version = await createVersion(message.promptId, message.data);
+            // Use core's VersioningEngine to create a version
+            const version = await versioningEngine!.createVersion(message.promptId, message.data);
             panel.webview.postMessage({ type: 'versionCreated', data: version });
             treeDataProvider?.refresh();
           } catch (error) {
@@ -286,7 +296,8 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
 
         case 'compareRuns': {
           try {
-            const comparison = await compareRuns(message.runIdA, message.runIdB);
+            // Use core's ComparisonEngine to compare runs
+            const comparison = await comparisonEngine!.compareRuns(message.runIdA, message.runIdB);
             panel.webview.postMessage({ type: 'comparison', data: comparison });
           } catch (error) {
             panel.webview.postMessage({
@@ -298,8 +309,7 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
         }
 
         case 'getAPIConfig': {
-          const config = await getAPIConfig();
-          panel.webview.postMessage({ type: 'apiConfig', data: config });
+          panel.webview.postMessage({ type: 'apiConfig', data: apiConfig });
           break;
         }
 
@@ -344,6 +354,307 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
           panel.webview.postMessage({ type: 'runs', data: runs });
           break;
         }
+
+        case 'getTestSets': {
+          if (!db) {
+            panel.webview.postMessage({ type: 'testSets', data: [] });
+            return;
+          }
+          const conn = db.connection;
+          const rows = conn
+            .prepare('SELECT * FROM test_sets ORDER BY created_at DESC')
+            .all() as any[];
+          const testSets = rows.map((row) => ({
+            id: row.id,
+            name: row.name,
+            description: row.description ?? undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          }));
+          panel.webview.postMessage({ type: 'testSets', data: testSets });
+          break;
+        }
+
+        case 'createTestSet': {
+          try {
+            const conn = db!.connection;
+            const id = crypto.randomUUID();
+            const now = new Date().toISOString();
+            conn.prepare(
+              `INSERT INTO test_sets (id, name, description, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)`,
+            ).run(id, message.data.name, message.data.description ?? null, now, now);
+
+            if (message.data.inputs) {
+              const insertInput = conn.prepare(
+                `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
+              );
+              for (const input of message.data.inputs) {
+                insertInput.run(crypto.randomUUID(), id, input);
+              }
+            }
+
+            const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+            panel.webview.postMessage({
+              type: 'testSetCreated',
+              data: {
+                id: row.id,
+                name: row.name,
+                description: row.description ?? undefined,
+                createdAt: row.created_at,
+                updatedAt: row.updated_at,
+              },
+            });
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Failed to create test set',
+            });
+          }
+          break;
+        }
+
+        case 'runTestSet': {
+          try {
+            const conn = db!.connection;
+            const testSetRow = conn
+              .prepare('SELECT * FROM test_sets WHERE id = ?')
+              .get(message.testSetId) as any;
+            if (!testSetRow) {
+              panel.webview.postMessage({
+                type: 'error',
+                message: 'Test set not found',
+              });
+              return;
+            }
+
+            // Get inputs
+            const inputRows = conn
+              .prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ?')
+              .all(message.testSetId) as { input: string }[];
+
+            // Get prompt metadata
+            const promptRow = conn
+              .prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompts WHERE id = ?')
+              .get(message.promptId) as any;
+
+            if (!promptRow) {
+              panel.webview.postMessage({
+                type: 'error',
+                message: 'Prompt not found',
+              });
+              return;
+            }
+
+            // Get version metadata
+            const versionRow = conn
+              .prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompt_versions WHERE id = ?')
+              .get(message.versionId) as any;
+
+            if (!versionRow) {
+              panel.webview.postMessage({
+                type: 'error',
+                message: 'Version not found',
+              });
+              return;
+            }
+
+            const results: any[] = [];
+            for (const inputRow of inputRows) {
+              const startTime = Date.now();
+              const resultId = crypto.randomUUID();
+              const createdAt = new Date().toISOString();
+
+              try {
+                const model = versionRow.model || promptRow.model;
+                const temperature = versionRow.temperature ?? promptRow.temperature;
+                const maxTokens = versionRow.maxTokens ?? promptRow.maxTokens;
+                const systemPrompt = versionRow.system_prompt ?? promptRow.system_prompt;
+
+                const messages: Array<{ role: string; content: string }> = [];
+                if (systemPrompt) {
+                  messages.push({ role: 'system', content: systemPrompt });
+                }
+                messages.push({ role: 'user', content: inputRow.input });
+
+                const response = await fetch(`${apiConfig!.baseUrl}/chat/completions`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    ...(apiConfig!.apiKey ? { Authorization: `Bearer ${apiConfig!.apiKey}` } : {}),
+                  },
+                  body: JSON.stringify({
+                    model,
+                    messages,
+                    temperature,
+                    max_tokens: maxTokens,
+                    stream: false,
+                  }),
+                });
+
+                if (!response.ok) {
+                  const errorText = await response.text();
+                  throw new Error(`API error ${response.status}: ${errorText}`);
+                }
+
+                const apiResponse = await response.json() as {
+                  choices: Array<{ message: { content: string } }>;
+                  usage?: { completion_tokens?: number };
+                };
+
+                const output = apiResponse.choices[0]?.message?.content ?? '';
+                const latencyMs = Date.now() - startTime;
+                const tokenCount = apiResponse.usage?.completion_tokens
+                  ?? Math.ceil(output.length / 4);
+
+                // Save result
+                conn.prepare(
+                  `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ).run(
+                  resultId, message.testSetId, message.promptId, message.versionId,
+                  inputRow.input, output, tokenCount, latencyMs, createdAt,
+                );
+
+                results.push({
+                  id: resultId,
+                  testSetId: message.testSetId,
+                  promptId: message.promptId,
+                  versionId: message.versionId,
+                  input: inputRow.input,
+                  output,
+                  tokenCount,
+                  latencyMs,
+                  createdAt,
+                });
+
+                panel.webview.postMessage({
+                  type: 'testRunResult',
+                  data: results[results.length - 1],
+                });
+              } catch (error) {
+                const latencyMs = Date.now() - startTime;
+                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+                const resultId = crypto.randomUUID();
+                const createdAt = new Date().toISOString();
+
+                conn.prepare(
+                  `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, error, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                ).run(
+                  resultId, message.testSetId, message.promptId, message.versionId,
+                  inputRow.input, '', 0, latencyMs, errorMessage, createdAt,
+                );
+
+                results.push({
+                  id: resultId,
+                  testSetId: message.testSetId,
+                  promptId: message.promptId,
+                  versionId: message.versionId,
+                  input: inputRow.input,
+                  output: '',
+                  tokenCount: 0,
+                  latencyMs,
+                  error: errorMessage,
+                  createdAt,
+                });
+
+                panel.webview.postMessage({
+                  type: 'testRunResult',
+                  data: results[results.length - 1],
+                });
+              }
+            }
+
+            panel.webview.postMessage({
+              type: 'testSetComplete',
+              data: { results, total: results.length },
+            });
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Failed to run test set',
+            });
+          }
+          break;
+        }
+
+        case 'getTestResults': {
+          if (!db) {
+            panel.webview.postMessage({ type: 'testResults', data: [] });
+            return;
+          }
+          const conn = db.connection;
+          const rows = conn
+            .prepare('SELECT * FROM test_run_results WHERE test_set_id = ? ORDER BY created_at ASC')
+            .all(message.testSetId) as any[];
+          const results = rows.map((row) => ({
+            id: row.id,
+            testSetId: row.test_set_id,
+            promptId: row.prompt_id,
+            versionId: row.version_id,
+            input: row.input,
+            output: row.output,
+            tokenCount: row.token_count,
+            latencyMs: row.latency_ms,
+            cost: row.cost ?? undefined,
+            error: row.error ?? undefined,
+            createdAt: row.created_at,
+          }));
+          panel.webview.postMessage({ type: 'testResults', data: results });
+          break;
+        }
+
+        case 'getVersionDiff': {
+          if (!versioningEngine) {
+            panel.webview.postMessage({ type: 'error', message: 'Versioning engine not initialized' });
+            return;
+          }
+          try {
+            const diff = versioningEngine.getVersionDiff(message.versionIdA, message.versionIdB);
+            panel.webview.postMessage({ type: 'versionDiff', data: diff });
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Failed to get version diff',
+            });
+          }
+          break;
+        }
+
+        case 'rollbackVersion': {
+          try {
+            if (!versioningEngine || !db) {
+              throw new Error('Versioning engine not initialized');
+            }
+            const prompt = versioningEngine.rollbackToVersion(message.promptId, message.versionId);
+            panel.webview.postMessage({ type: 'versionRolledBack', data: prompt });
+            treeDataProvider?.refresh();
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Failed to rollback version',
+            });
+          }
+          break;
+        }
+
+        case 'listModels': {
+          try {
+            if (!openAIClient) {
+              panel.webview.postMessage({ type: 'error', message: 'OpenAI client not initialized' });
+              return;
+            }
+            const models = await openAIClient.listModels();
+            panel.webview.postMessage({ type: 'models', data: models });
+          } catch (error) {
+            panel.webview.postMessage({
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Failed to list models',
+            });
+          }
+          break;
+        }
       }
     },
     undefined,
@@ -362,8 +673,6 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
 }
 
 function getWebviewContent(webview: vscode.Webview): string {
-  // For now, show a simple HTML page with instructions
-  // In a full implementation, this would load the React app
   const viteDevUrl = 'http://localhost:5173'; // Vite dev server URL
 
   return `<!DOCTYPE html>
@@ -513,6 +822,11 @@ function getWebviewContent(webview: vscode.Webview): string {
         case 'prompts':
           statusDetails.textContent = 'Loaded ' + message.data.length + ' prompts.';
           break;
+        case 'apiConfig':
+          if (message.data) {
+            statusDetails.textContent = 'API: ' + message.data.baseUrl;
+          }
+          break;
       }
     });
   </script>
@@ -522,12 +836,16 @@ function getWebviewContent(webview: vscode.Webview): string {
 
 // ─── Core API Wrappers ───────────────────────────────────────────────────────
 
+/**
+ * Create a new prompt using the core DB directly.
+ * This mirrors the WorkbenchService.createPrompt logic from the web server.
+ */
 async function createPrompt(data: PromptCreate): Promise<Prompt> {
   if (!db) {
     throw new Error('Database not initialized');
   }
   const conn = db.connection;
-  const id = crypto.randomUUID();
+  const id = require('node:crypto').randomUUID();
   const now = new Date().toISOString();
 
   conn
@@ -547,6 +865,19 @@ async function createPrompt(data: PromptCreate): Promise<Prompt> {
       now,
     );
 
+  // Create initial version using core's VersioningEngine
+  if (versioningEngine) {
+    versioningEngine.createVersion(id, {
+      promptId: id,
+      content: data.content,
+      model: data.model,
+      temperature: data.temperature,
+      maxTokens: data.maxTokens,
+      systemPrompt: data.systemPrompt,
+      commitMessage: 'Initial version',
+    });
+  }
+
   return {
     id,
     name: data.name,
@@ -560,6 +891,9 @@ async function createPrompt(data: PromptCreate): Promise<Prompt> {
   };
 }
 
+/**
+ * Update a prompt using the core DB directly.
+ */
 async function updatePrompt(id: string, data: PromptUpdate): Promise<Prompt> {
   if (!db) {
     throw new Error('Database not initialized');
@@ -605,6 +939,19 @@ async function updatePrompt(id: string, data: PromptUpdate): Promise<Prompt> {
 
   conn.prepare(`UPDATE prompts SET ${updates.join(', ')} WHERE id = ?`).run(...values);
 
+  // Create a new version if content changed, using core's VersioningEngine
+  if (versioningEngine && data.content !== undefined) {
+    versioningEngine.createVersion(id, {
+      promptId: id,
+      content: data.content,
+      model: data.model || '',
+      temperature: data.temperature ?? 0,
+      maxTokens: data.maxTokens ?? 0,
+      systemPrompt: data.systemPrompt,
+      commitMessage: data.name !== undefined ? `Rename to ${data.name}` : 'Update content',
+    });
+  }
+
   const row = conn
     .prepare('SELECT * FROM prompts WHERE id = ?')
     .get(id) as any;
@@ -622,20 +969,26 @@ async function updatePrompt(id: string, data: PromptUpdate): Promise<Prompt> {
   };
 }
 
+/**
+ * Delete a prompt and all its associated data using the core DB.
+ */
 async function deletePrompt(id: string): Promise<void> {
   if (!db) {
     throw new Error('Database not initialized');
   }
-  db.connection.prepare('DELETE FROM prompts WHERE id = ?').run(id);
+  const conn = db.connection;
+  conn.transaction(() => {
+    conn.prepare('DELETE FROM prompt_runs WHERE prompt_id = ?').run(id);
+    conn.prepare('DELETE FROM test_run_results WHERE prompt_id = ?').run(id);
+    conn.prepare('DELETE FROM prompt_versions WHERE prompt_id = ?').run(id);
+    conn.prepare('DELETE FROM prompts WHERE id = ?').run(id);
+  })();
 }
 
-async function createVersion(promptId: string, data: PromptVersionCreate): Promise<PromptVersion | undefined> {
-  if (!versioningEngine) {
-    throw new Error('Versioning engine not initialized');
-  }
-  return versioningEngine.createVersion(promptId, data);
-}
-
+/**
+ * Run a prompt against the configured OpenAI-compatible endpoint.
+ * Uses the core's OpenAIClient for execution.
+ */
 async function runPrompt(data: PromptRunCreate): Promise<any> {
   if (!openAIClient) {
     throw new Error('OpenAI client not initialized');
@@ -656,13 +1009,19 @@ async function runPrompt(data: PromptRunCreate): Promise<any> {
   };
 }
 
-async function compareRuns(runIdA: string, runIdB: string): Promise<any> {
+/**
+ * Compare two runs using the core's ComparisonEngine.
+ */
+async function compareRuns(runIdA: string, runIdB: string): Promise<ComparisonResult> {
   if (!comparisonEngine) {
     throw new Error('Comparison engine not initialized');
   }
   return comparisonEngine.compareRuns(runIdA, runIdB);
 }
 
+/**
+ * Get API config from the core DB.
+ */
 async function getAPIConfig(): Promise<APIConfig | undefined> {
   if (!db) {
     return undefined;
@@ -690,6 +1049,9 @@ async function getAPIConfig(): Promise<APIConfig | undefined> {
   };
 }
 
+/**
+ * Save API config to the core DB and update the OpenAI client.
+ */
 async function saveAPIConfig(config: APIConfig): Promise<void> {
   if (!db) {
     throw new Error('Database not initialized');
@@ -711,6 +1073,25 @@ async function saveAPIConfig(config: APIConfig): Promise<void> {
       .prepare("INSERT OR REPLACE INTO api_config (key, value) VALUES ('defaultModel', ?)")
       .run(config.defaultModel);
   }
+
+  // Update the OpenAI client with new config
+  if (openAIClient && db) {
+    openAIClient = new OpenAIClient(db, config);
+  }
+
+  // Update the module-level apiConfig
+  apiConfig = config;
+}
+
+/**
+ * Create a version for a prompt using the core's VersioningEngine.
+ * This is a convenience wrapper used by the runPrompt command.
+ */
+async function createVersion(promptId: string, data: PromptVersionCreate): Promise<PromptVersion | undefined> {
+  if (!versioningEngine) {
+    throw new Error('Versioning engine not initialized');
+  }
+  return versioningEngine.createVersion(promptId, data);
 }
 
 // ─── Activation ──────────────────────────────────────────────────────────────
@@ -720,35 +1101,43 @@ export function activate(context: vscode.ExtensionContext) {
   const dbFile = `${dbPath}/promptsentry.db`;
 
   try {
-    // Initialize core components
+    // ── Initialize core components ──────────────────────────────────────────
+    // DB: the core database layer wrapping better-sqlite3
     db = new DB({ path: dbFile });
+
+    // VersioningEngine: handles git-style versioning (create, diff, rollback)
     versioningEngine = new VersioningEngine(db);
+
+    // ComparisonEngine: handles run comparison (lexical/semantic similarity)
     comparisonEngine = new ComparisonEngine(db);
 
-    // Get API config from VS Code settings
+    // ── Load API config from VS Code settings ───────────────────────────────
     const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
-    const apiConfig: APIConfig = {
+    apiConfig = {
       baseUrl: vscodeConfig.get('apiBaseUrl', 'http://localhost:11434/v1'),
       apiKey: vscodeConfig.get('apiKey', ''),
       defaultModel: vscodeConfig.get('defaultModel', 'llama3'),
     };
 
+    // OpenAIClient: executes prompts against OpenAI-compatible endpoints
     openAIClient = new OpenAIClient(db, apiConfig);
 
-    // Register tree view
+    // ── Register tree view ──────────────────────────────────────────────────
     const treeDataProvider = new PromptSentryTreeDataProvider();
     treeView = vscode.window.createTreeView('promptsentryView', {
       treeDataProvider,
     });
     context.subscriptions.push(treeView);
 
-    // Register commands
+    // ── Register commands ───────────────────────────────────────────────────
     const commands = [
+      // Refresh: refreshes the tree view
       vscode.commands.registerCommand('promptsentry.refresh', () => {
         treeDataProvider?.refresh();
         vscode.window.showInformationMessage('PromptSentry: Refreshed');
       }),
 
+      // New Prompt: creates a new prompt via input boxes
       vscode.commands.registerCommand('promptsentry.newPrompt', async () => {
         const name = await vscode.window.showInputBox({
           prompt: 'Enter prompt name',
@@ -773,14 +1162,14 @@ export function activate(context: vscode.ExtensionContext) {
 
         const model = await vscode.window.showInputBox({
           prompt: 'Enter model name',
-          placeHolder: apiConfig.defaultModel || 'llama3',
-          value: apiConfig.defaultModel,
+          placeHolder: apiConfig?.defaultModel || 'llama3',
+          value: apiConfig?.defaultModel,
         });
 
         const prompt = await createPrompt({
           name,
           content,
-          model: model || apiConfig.defaultModel || 'llama3',
+          model: model || apiConfig?.defaultModel || 'llama3',
           temperature: 0.7,
           maxTokens: 1024,
         });
@@ -789,6 +1178,7 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider?.refresh();
       }),
 
+      // Run Prompt: runs a prompt against the API with status bar feedback
       vscode.commands.registerCommand('promptsentry.runPrompt', async () => {
         if (!db || !openAIClient) {
           vscode.window.showErrorMessage('PromptSentry: Not initialized');
@@ -830,19 +1220,20 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        // Get version
+        // Get version using core's VersioningEngine
         const versions = versioningEngine!.listVersions(selected.id);
 
         let versionId: string;
         if (versions.length === 0) {
           // Create a version from the current prompt
+          const currentPrompt = rows.find((r: any) => r.id === selected.id);
           const version = await createVersion(selected.id, {
             promptId: selected.id,
-            content: rows.find((r: any) => r.id === selected.id)!.content,
-            model: rows.find((r: any) => r.id === selected.id)!.model,
-            temperature: rows.find((r: any) => r.id === selected.id)!.temperature,
-            maxTokens: rows.find((r: any) => r.id === selected.id)!.maxTokens,
-            systemPrompt: rows.find((r: any) => r.id === selected.id)!.system_prompt ?? undefined,
+            content: currentPrompt!.content,
+            model: currentPrompt!.model,
+            temperature: currentPrompt!.temperature,
+            maxTokens: currentPrompt!.maxTokens,
+            systemPrompt: currentPrompt!.system_prompt ?? undefined,
           });
           if (!version) {
             vscode.window.showErrorMessage('PromptSentry: Failed to create initial version');
@@ -880,7 +1271,7 @@ export function activate(context: vscode.ExtensionContext) {
             promptId: selected.id,
             versionId,
             input,
-            model: apiConfig.defaultModel || 'llama3',
+            model: apiConfig?.defaultModel || 'llama3',
             temperature: 0.7,
             maxTokens: 1024,
           });
@@ -905,6 +1296,7 @@ export function activate(context: vscode.ExtensionContext) {
         treeDataProvider?.refresh();
       }),
 
+      // Compare: compares two versions and shows a markdown diff in a new editor
       vscode.commands.registerCommand('promptsentry.compare', async () => {
         if (!db) {
           vscode.window.showErrorMessage('PromptSentry: Not initialized');
@@ -935,7 +1327,7 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        // Get versions
+        // Get versions using core's VersioningEngine
         const versions = versioningEngine!.listVersions(selectedPrompt.id);
 
         if (versions.length < 2) {
@@ -976,7 +1368,7 @@ export function activate(context: vscode.ExtensionContext) {
           return;
         }
 
-        // Get diff
+        // Get diff using core's VersioningEngine
         const diff = versioningEngine!.getVersionDiff(selectedVersionA.id, selectedVersionB.id);
 
         // Show diff in a new editor
@@ -989,6 +1381,7 @@ export function activate(context: vscode.ExtensionContext) {
         await vscode.window.showTextDocument(doc);
       }),
 
+      // Open Panel: opens/closes the webview panel
       vscode.commands.registerCommand('promptsentry.openPanel', (args?: { promptId?: string }) => {
         if (!webviewPanel) {
           webviewPanel = createWebviewPanel(context, args?.promptId);
@@ -997,6 +1390,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }),
 
+      // Open API Config: configures API settings via input boxes
       vscode.commands.registerCommand('promptsentry.openApiConfig', async () => {
         const currentConfig = await getAPIConfig();
 
@@ -1036,11 +1430,6 @@ export function activate(context: vscode.ExtensionContext) {
           apiKey,
           defaultModel,
         });
-
-        // Update the OpenAI client with new config
-        if (openAIClient) {
-          openAIClient = new OpenAIClient(db!, { baseUrl, apiKey, defaultModel });
-        }
 
         // Update VS Code settings
         const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
