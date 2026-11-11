@@ -141,7 +141,7 @@ class PromptSentryTreeDataProvider implements vscode.TreeDataProvider<PromptTree
 
 // ─── Webview Panel ───────────────────────────────────────────────────────────
 
-function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string): vscode.WebviewPanel {
+async function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string): Promise<vscode.WebviewPanel> {
   const panel = vscode.window.createWebviewPanel(
     'promptsentry.workbench',
     'PromptSentry Workbench',
@@ -152,509 +152,57 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
     },
   );
 
-  panel.webview.html = getWebviewContent(panel.webview);
+  panel.webview.html = await getWebviewContent(panel.webview, context);
+
+  // ── Message bridge: webview ↔ extension core ──────────────────────────────
+  // The React UI talks to /api/* endpoints via a fetch() interceptor that
+  // routes through postMessage.  The extension intercepts those api-request
+  // messages, executes the core logic, and sends back api-response messages.
 
   panel.webview.onDidReceiveMessage(
     async (message: any) => {
+      // ── API request bridge ────────────────────────────────────────────────
+      if (message.type === 'api-request') {
+        const { id, method, path, body } = message;
+        try {
+          const result = await handleApiRequest(method, path, body);
+          panel.webview.postMessage({ type: 'api-response', id, status: 200, body: result });
+        } catch (error) {
+          const status = (error as any)?.status ?? 500;
+          const errorMessage = error instanceof Error ? error.message : 'Internal error';
+          panel.webview.postMessage({
+            type: 'api-response',
+            id,
+            status,
+            body: { error: errorMessage },
+          });
+        }
+        return;
+      }
+
+      // ── Pass-through for other message types (e.g. from webview bridge) ──
       switch (message.type) {
         case 'ready':
-          // Send initial API config
+          // Webview is ready; send initial API config
           panel.webview.postMessage({ type: 'apiConfig', data: apiConfig });
           break;
 
-        case 'getPrompts': {
-          if (!db) {
-            panel.webview.postMessage({ type: 'prompts', data: [] });
-            return;
-          }
-          const conn = db.connection;
-          const rows = conn.prepare('SELECT * FROM prompts ORDER BY updated_at DESC').all() as any[];
-          const prompts = rows.map((row) => ({
-            id: row.id,
-            name: row.name,
-            content: row.content,
-            model: row.model,
-            temperature: row.temperature,
-            maxTokens: row.maxTokens,
-            systemPrompt: row.system_prompt ?? undefined,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-          }));
-          panel.webview.postMessage({ type: 'prompts', data: prompts });
+        case 'openApiConfig':
+          vscode.commands.executeCommand('promptsentry.openApiConfig');
           break;
-        }
 
-        case 'getPrompt': {
-          if (!db) {
-            panel.webview.postMessage({ type: 'prompt', data: null });
-            return;
-          }
-          const conn = db.connection;
-          const row = conn.prepare('SELECT * FROM prompts WHERE id = ?').get(message.id) as any;
-          if (row) {
-            panel.webview.postMessage({
-              type: 'prompt',
-              data: {
-                id: row.id,
-                name: row.name,
-                content: row.content,
-                model: row.model,
-                temperature: row.temperature,
-                maxTokens: row.maxTokens,
-                systemPrompt: row.system_prompt ?? undefined,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-              },
-            });
-          } else {
-            panel.webview.postMessage({ type: 'prompt', data: null });
-          }
+        case 'newPrompt':
+          vscode.commands.executeCommand('promptsentry.newPrompt');
           break;
-        }
 
-        case 'createPrompt': {
-          try {
-            const prompt = await createPrompt(message.data);
-            panel.webview.postMessage({ type: 'promptCreated', data: prompt });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to create prompt',
-            });
-          }
+        case 'refresh':
+          treeDataProvider?.refresh();
+          panel.webview.postMessage({ type: 'refreshed' });
           break;
-        }
 
-        case 'updatePrompt': {
-          try {
-            const prompt = await updatePrompt(message.id, message.data);
-            panel.webview.postMessage({ type: 'promptUpdated', data: prompt });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to update prompt',
-            });
-          }
+        default:
+          // Unknown message type — ignore silently
           break;
-        }
-
-        case 'deletePrompt': {
-          try {
-            await deletePrompt(message.id);
-            panel.webview.postMessage({ type: 'promptDeleted', id: message.id });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to delete prompt',
-            });
-          }
-          break;
-        }
-
-        case 'getVersions': {
-          if (!db || !versioningEngine) {
-            panel.webview.postMessage({ type: 'versions', data: [] });
-            return;
-          }
-          // Use core's VersioningEngine to list versions
-          const versions = versioningEngine.listVersions(message.promptId);
-          panel.webview.postMessage({ type: 'versions', data: versions });
-          break;
-        }
-
-        case 'createVersion': {
-          try {
-            // Use core's VersioningEngine to create a version
-            const version = await versioningEngine!.createVersion(message.promptId, message.data);
-            panel.webview.postMessage({ type: 'versionCreated', data: version });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to create version',
-            });
-          }
-          break;
-        }
-
-        case 'runPrompt': {
-          try {
-            const result = await runPrompt(message.data);
-            panel.webview.postMessage({ type: 'runComplete', data: result });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to run prompt',
-            });
-          }
-          break;
-        }
-
-        case 'compareRuns': {
-          try {
-            // Use core's ComparisonEngine to compare runs
-            const comparison = await comparisonEngine!.compareRuns(message.runIdA, message.runIdB);
-            panel.webview.postMessage({ type: 'comparison', data: comparison });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to compare runs',
-            });
-          }
-          break;
-        }
-
-        case 'getAPIConfig': {
-          panel.webview.postMessage({ type: 'apiConfig', data: apiConfig });
-          break;
-        }
-
-        case 'saveAPIConfig': {
-          try {
-            await saveAPIConfig(message.data);
-            panel.webview.postMessage({ type: 'apiConfigSaved' });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to save API config',
-            });
-          }
-          break;
-        }
-
-        case 'getRuns': {
-          if (!db) {
-            panel.webview.postMessage({ type: 'runs', data: [] });
-            return;
-          }
-          const conn = db.connection;
-          const rows = conn
-            .prepare('SELECT * FROM prompt_runs WHERE prompt_id = ? ORDER BY created_at DESC')
-            .all(message.promptId) as any[];
-          const runs = rows.map((row) => ({
-            id: row.id,
-            promptId: row.prompt_id,
-            versionId: row.version_id,
-            input: row.input,
-            output: row.output,
-            model: row.model,
-            temperature: row.temperature,
-            maxTokens: row.maxTokens,
-            systemPrompt: row.system_prompt ?? undefined,
-            tokenCount: row.token_count,
-            latencyMs: row.latency_ms,
-            cost: row.cost ?? undefined,
-            createdAt: row.created_at,
-            error: row.error ?? undefined,
-          }));
-          panel.webview.postMessage({ type: 'runs', data: runs });
-          break;
-        }
-
-        case 'getTestSets': {
-          if (!db) {
-            panel.webview.postMessage({ type: 'testSets', data: [] });
-            return;
-          }
-          const conn = db.connection;
-          const rows = conn
-            .prepare('SELECT * FROM test_sets ORDER BY created_at DESC')
-            .all() as any[];
-          const testSets = rows.map((row) => ({
-            id: row.id,
-            name: row.name,
-            description: row.description ?? undefined,
-            createdAt: row.created_at,
-            updatedAt: row.updated_at,
-          }));
-          panel.webview.postMessage({ type: 'testSets', data: testSets });
-          break;
-        }
-
-        case 'createTestSet': {
-          try {
-            const conn = db!.connection;
-            const id = crypto.randomUUID();
-            const now = new Date().toISOString();
-            conn.prepare(
-              `INSERT INTO test_sets (id, name, description, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)`,
-            ).run(id, message.data.name, message.data.description ?? null, now, now);
-
-            if (message.data.inputs) {
-              const insertInput = conn.prepare(
-                `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
-              );
-              for (const input of message.data.inputs) {
-                insertInput.run(crypto.randomUUID(), id, input);
-              }
-            }
-
-            const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
-            panel.webview.postMessage({
-              type: 'testSetCreated',
-              data: {
-                id: row.id,
-                name: row.name,
-                description: row.description ?? undefined,
-                createdAt: row.created_at,
-                updatedAt: row.updated_at,
-              },
-            });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to create test set',
-            });
-          }
-          break;
-        }
-
-        case 'runTestSet': {
-          try {
-            const conn = db!.connection;
-            const testSetRow = conn
-              .prepare('SELECT * FROM test_sets WHERE id = ?')
-              .get(message.testSetId) as any;
-            if (!testSetRow) {
-              panel.webview.postMessage({
-                type: 'error',
-                message: 'Test set not found',
-              });
-              return;
-            }
-
-            // Get inputs
-            const inputRows = conn
-              .prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ?')
-              .all(message.testSetId) as { input: string }[];
-
-            // Get prompt metadata
-            const promptRow = conn
-              .prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompts WHERE id = ?')
-              .get(message.promptId) as any;
-
-            if (!promptRow) {
-              panel.webview.postMessage({
-                type: 'error',
-                message: 'Prompt not found',
-              });
-              return;
-            }
-
-            // Get version metadata
-            const versionRow = conn
-              .prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompt_versions WHERE id = ?')
-              .get(message.versionId) as any;
-
-            if (!versionRow) {
-              panel.webview.postMessage({
-                type: 'error',
-                message: 'Version not found',
-              });
-              return;
-            }
-
-            const results: any[] = [];
-            for (const inputRow of inputRows) {
-              const startTime = Date.now();
-              const resultId = crypto.randomUUID();
-              const createdAt = new Date().toISOString();
-
-              try {
-                const model = versionRow.model || promptRow.model;
-                const temperature = versionRow.temperature ?? promptRow.temperature;
-                const maxTokens = versionRow.maxTokens ?? promptRow.maxTokens;
-                const systemPrompt = versionRow.system_prompt ?? promptRow.system_prompt;
-
-                const messages: Array<{ role: string; content: string }> = [];
-                if (systemPrompt) {
-                  messages.push({ role: 'system', content: systemPrompt });
-                }
-                messages.push({ role: 'user', content: inputRow.input });
-
-                const response = await fetch(`${apiConfig!.baseUrl}/chat/completions`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    ...(apiConfig!.apiKey ? { Authorization: `Bearer ${apiConfig!.apiKey}` } : {}),
-                  },
-                  body: JSON.stringify({
-                    model,
-                    messages,
-                    temperature,
-                    max_tokens: maxTokens,
-                    stream: false,
-                  }),
-                });
-
-                if (!response.ok) {
-                  const errorText = await response.text();
-                  throw new Error(`API error ${response.status}: ${errorText}`);
-                }
-
-                const apiResponse = await response.json() as {
-                  choices: Array<{ message: { content: string } }>;
-                  usage?: { completion_tokens?: number };
-                };
-
-                const output = apiResponse.choices[0]?.message?.content ?? '';
-                const latencyMs = Date.now() - startTime;
-                const tokenCount = apiResponse.usage?.completion_tokens
-                  ?? Math.ceil(output.length / 4);
-
-                // Save result
-                conn.prepare(
-                  `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                ).run(
-                  resultId, message.testSetId, message.promptId, message.versionId,
-                  inputRow.input, output, tokenCount, latencyMs, createdAt,
-                );
-
-                results.push({
-                  id: resultId,
-                  testSetId: message.testSetId,
-                  promptId: message.promptId,
-                  versionId: message.versionId,
-                  input: inputRow.input,
-                  output,
-                  tokenCount,
-                  latencyMs,
-                  createdAt,
-                });
-
-                panel.webview.postMessage({
-                  type: 'testRunResult',
-                  data: results[results.length - 1],
-                });
-              } catch (error) {
-                const latencyMs = Date.now() - startTime;
-                const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-                const resultId = crypto.randomUUID();
-                const createdAt = new Date().toISOString();
-
-                conn.prepare(
-                  `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, error, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                ).run(
-                  resultId, message.testSetId, message.promptId, message.versionId,
-                  inputRow.input, '', 0, latencyMs, errorMessage, createdAt,
-                );
-
-                results.push({
-                  id: resultId,
-                  testSetId: message.testSetId,
-                  promptId: message.promptId,
-                  versionId: message.versionId,
-                  input: inputRow.input,
-                  output: '',
-                  tokenCount: 0,
-                  latencyMs,
-                  error: errorMessage,
-                  createdAt,
-                });
-
-                panel.webview.postMessage({
-                  type: 'testRunResult',
-                  data: results[results.length - 1],
-                });
-              }
-            }
-
-            panel.webview.postMessage({
-              type: 'testSetComplete',
-              data: { results, total: results.length },
-            });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to run test set',
-            });
-          }
-          break;
-        }
-
-        case 'getTestResults': {
-          if (!db) {
-            panel.webview.postMessage({ type: 'testResults', data: [] });
-            return;
-          }
-          const conn = db.connection;
-          const rows = conn
-            .prepare('SELECT * FROM test_run_results WHERE test_set_id = ? ORDER BY created_at ASC')
-            .all(message.testSetId) as any[];
-          const results = rows.map((row) => ({
-            id: row.id,
-            testSetId: row.test_set_id,
-            promptId: row.prompt_id,
-            versionId: row.version_id,
-            input: row.input,
-            output: row.output,
-            tokenCount: row.token_count,
-            latencyMs: row.latency_ms,
-            cost: row.cost ?? undefined,
-            error: row.error ?? undefined,
-            createdAt: row.created_at,
-          }));
-          panel.webview.postMessage({ type: 'testResults', data: results });
-          break;
-        }
-
-        case 'getVersionDiff': {
-          if (!versioningEngine) {
-            panel.webview.postMessage({ type: 'error', message: 'Versioning engine not initialized' });
-            return;
-          }
-          try {
-            const diff = versioningEngine.getVersionDiff(message.versionIdA, message.versionIdB);
-            panel.webview.postMessage({ type: 'versionDiff', data: diff });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to get version diff',
-            });
-          }
-          break;
-        }
-
-        case 'rollbackVersion': {
-          try {
-            if (!versioningEngine || !db) {
-              throw new Error('Versioning engine not initialized');
-            }
-            const prompt = versioningEngine.rollbackToVersion(message.promptId, message.versionId);
-            panel.webview.postMessage({ type: 'versionRolledBack', data: prompt });
-            treeDataProvider?.refresh();
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to rollback version',
-            });
-          }
-          break;
-        }
-
-        case 'listModels': {
-          try {
-            if (!openAIClient) {
-              panel.webview.postMessage({ type: 'error', message: 'OpenAI client not initialized' });
-              return;
-            }
-            const models = await openAIClient.listModels();
-            panel.webview.postMessage({ type: 'models', data: models });
-          } catch (error) {
-            panel.webview.postMessage({
-              type: 'error',
-              message: error instanceof Error ? error.message : 'Failed to list models',
-            });
-          }
-          break;
-        }
       }
     },
     undefined,
@@ -672,166 +220,305 @@ function createWebviewPanel(context: vscode.ExtensionContext, promptId?: string)
   return panel;
 }
 
-function getWebviewContent(webview: vscode.Webview): string {
-  const viteDevUrl = 'http://localhost:5173'; // Vite dev server URL
+/**
+ * Route an API request to the appropriate handler using the core DB.
+ * Mirrors the routes defined in packages/web/server/app.ts.
+ */
+async function handleApiRequest(method: string, path: string, body: any): Promise<any> {
+  if (!db) {
+    throw { status: 500, message: 'Database not initialized' };
+  }
+  const conn = db.connection;
 
-  return `<!DOCTYPE html>
+  // ── Health ──────────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/api/health') {
+    return { status: 'ok' };
+  }
+
+  // ── Config ──────────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/api/config') {
+    return apiConfig ?? null;
+  }
+  if (method === 'PUT' && path === '/api/config') {
+    const config = body ?? {};
+    const baseUrl = (config.baseUrl ?? '').trim().replace(/\/+$/, '');
+    if (!baseUrl) throw { status: 400, message: 'baseUrl is required' };
+    const next: APIConfig = {
+      baseUrl,
+      apiKey: config.apiKey?.trim() || undefined,
+      defaultModel: config.defaultModel?.trim() || undefined,
+    };
+    const upsert = conn.prepare('INSERT OR REPLACE INTO api_config (key, value) VALUES (?, ?)');
+    const remove = conn.prepare('DELETE FROM api_config WHERE key = ?');
+    conn.transaction(() => {
+      upsert.run('baseUrl', next.baseUrl);
+      if (next.apiKey) upsert.run('apiKey', next.apiKey);
+      else remove.run('apiKey');
+      if (next.defaultModel) upsert.run('defaultModel', next.defaultModel);
+      else remove.run('defaultModel');
+    })();
+    if (openAIClient && db) {
+      openAIClient = new OpenAIClient(db, next);
+    }
+    apiConfig = next;
+    return next;
+  }
+
+  // ── Prompts ─────────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/api/prompts') {
+    const rows = conn.prepare('SELECT * FROM prompts ORDER BY created_at DESC').all() as any[];
+    return rows.map(mapPromptRow);
+  }
+  if (method === 'POST' && path === '/api/prompts') {
+    return createPrompt(body ?? {});
+  }
+  if (method === 'GET' && /^\/api\/prompts\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    const row = conn.prepare('SELECT * FROM prompts WHERE id = ?').get(id) as any;
+    if (!row) throw { status: 404, message: `Prompt ${id} not found` };
+    return mapPromptRow(row);
+  }
+  if (method === 'PUT' && /^\/api\/prompts\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    return updatePrompt(id, body ?? {});
+  }
+  if (method === 'DELETE' && /^\/api\/prompts\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    deletePrompt(id);
+    return undefined;
+  }
+
+  // ── Versions ────────────────────────────────────────────────────────────
+  if (method === 'GET' && /^\/api\/prompts\/[^/]+\/versions$/.test(path)) {
+    const promptId = decodeURIComponent(path.split('/')[3]);
+    if (!versioningEngine) throw { status: 500, message: 'Versioning engine not initialized' };
+    return versioningEngine.listVersions(promptId);
+  }
+  if (method === 'GET' && path === '/api/versions') {
+    // List all versions across all prompts
+    if (!versioningEngine) throw { status: 500, message: 'Versioning engine not initialized' };
+    // We need to list all prompts first, then get versions for each
+    const promptRows = conn.prepare('SELECT id FROM prompts').all() as { id: string }[];
+    const allVersions: any[] = [];
+    for (const pr of promptRows) {
+      allVersions.push(...versioningEngine.listVersions(pr.id));
+    }
+    return allVersions;
+  }
+  if (method === 'POST' && path === '/api/versions/compare') {
+    if (!versioningEngine) throw { status: 500, message: 'Versioning engine not initialized' };
+    const rowA = conn.prepare('SELECT content FROM prompt_versions WHERE id = ?').get(body?.versionIdA) as { content: string } | undefined;
+    const rowB = conn.prepare('SELECT content FROM prompt_versions WHERE id = ?').get(body?.versionIdB) as { content: string } | undefined;
+    const contentA = rowA?.content;
+    const contentB = rowB?.content;
+    if (!contentA || !contentB) throw { status: 404, message: 'One or both versions not found' };
+    return comparisonEngine!.computeLexicalDiff(contentA, contentB);
+  }
+
+  // ── Runs ────────────────────────────────────────────────────────────────
+  if (method === 'POST' && /^\/api\/prompts\/[^/]+\/run$/.test(path)) {
+    const promptId = decodeURIComponent(path.split('/')[3]);
+    const input = typeof body?.input === 'string' ? body.input : '';
+    const versionId = typeof body?.versionId === 'string' && body.versionId ? body.versionId : undefined;
+    return executePrompt(promptId, input, versionId);
+  }
+  if (method === 'GET' && path === '/api/runs') {
+    const promptId = new URLSearchParams(path.split('?')[1] ?? '').get('promptId');
+    const rows = promptId
+      ? conn.prepare('SELECT * FROM prompt_runs WHERE prompt_id = ? ORDER BY created_at DESC').all(promptId) as any[]
+      : conn.prepare('SELECT * FROM prompt_runs ORDER BY created_at DESC').all() as any[];
+    return rows.map(mapRunRow);
+  }
+  if (method === 'DELETE' && path === '/api/runs') {
+    conn.prepare('DELETE FROM prompt_runs').run();
+    return undefined;
+  }
+  if (method === 'GET' && /^\/api\/runs\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    const row = conn.prepare('SELECT * FROM prompt_runs WHERE id = ?').get(id) as any;
+    if (!row) throw { status: 404, message: `Run ${id} not found` };
+    return mapRunRow(row);
+  }
+  if (method === 'DELETE' && /^\/api\/runs\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    conn.prepare('DELETE FROM prompt_runs WHERE id = ?').run(id);
+    return undefined;
+  }
+  if (method === 'POST' && path === '/api/runs/compare') {
+    if (!comparisonEngine) throw { status: 500, message: 'Comparison engine not initialized' };
+    return comparisonEngine.compareRuns(body?.runIdA, body?.runIdB);
+  }
+
+  // ── Test Sets ───────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/api/test-sets') {
+    const rows = conn.prepare('SELECT * FROM test_sets ORDER BY created_at DESC').all() as any[];
+    return rows.map(mapTestSetRow);
+  }
+  if (method === 'POST' && path === '/api/test-sets') {
+    return createTestSet(body ?? {});
+  }
+  if (method === 'GET' && /^\/api\/test-sets\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+    if (!row) throw { status: 404, message: `Test set ${id} not found` };
+    return mapTestSetRow(row);
+  }
+  if (method === 'PUT' && /^\/api\/test-sets\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    return updateTestSet(id, body ?? {});
+  }
+  if (method === 'DELETE' && /^\/api\/test-sets\/[^/]+$/.test(path)) {
+    const id = decodeURIComponent(path.split('/').pop()!);
+    conn.transaction(() => {
+      conn.prepare('DELETE FROM test_run_results WHERE test_set_id = ?').run(id);
+      conn.prepare('DELETE FROM test_set_inputs WHERE test_set_id = ?').run(id);
+      conn.prepare('DELETE FROM test_sets WHERE id = ?').run(id);
+    })();
+    return undefined;
+  }
+  if (method === 'POST' && /^\/api\/test-sets\/[^/]+\/run$/.test(path)) {
+    const testSetId = decodeURIComponent(path.split('/')[3]);
+    return runTestSet(testSetId, body?.promptId, body?.versionId);
+  }
+  if (method === 'GET' && /^\/api\/test-sets\/[^/]+\/results$/.test(path)) {
+    const testSetId = decodeURIComponent(path.split('/')[3]);
+    const rows = conn
+      .prepare('SELECT * FROM test_run_results WHERE test_set_id = ? ORDER BY created_at ASC')
+      .all(testSetId) as any[];
+    return rows.map(mapTestRunResultRow);
+  }
+  if (method === 'DELETE' && /^\/api\/test-sets\/[^/]+\/results$/.test(path)) {
+    const testSetId = decodeURIComponent(path.split('/')[3]);
+    conn.prepare('DELETE FROM test_run_results WHERE test_set_id = ?').run(testSetId);
+    return undefined;
+  }
+
+  throw { status: 404, message: `Not found: ${method} ${path}` };
+}
+
+// ── Row mappers (mirroring server/service.ts) ────────────────────────────────
+
+function mapPromptRow(row: any): any {
+  return {
+    id: row.id,
+    name: row.name,
+    content: row.content,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.maxTokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapVersionRow(row: any): any {
+  return {
+    id: row.id,
+    promptId: row.prompt_id,
+    content: row.content,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    contentHash: row.content_hash,
+    versionNumber: row.version_number,
+    createdAt: row.created_at,
+    commitMessage: row.commit_message ?? undefined,
+  };
+}
+
+function mapRunRow(row: any): any {
+  return {
+    id: row.id,
+    promptId: row.prompt_id,
+    versionId: row.version_id,
+    input: row.input,
+    output: row.output,
+    model: row.model,
+    temperature: row.temperature,
+    maxTokens: row.max_tokens,
+    systemPrompt: row.system_prompt ?? undefined,
+    tokenCount: row.token_count,
+    latencyMs: row.latency_ms,
+    cost: row.cost ?? undefined,
+    createdAt: row.created_at,
+    error: row.error ?? undefined,
+  };
+}
+
+function mapTestSetRow(row: any): any {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    inputs: [], // will be populated separately
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapTestRunResultRow(row: any): any {
+  return {
+    id: row.id,
+    testSetId: row.test_set_id,
+    promptId: row.prompt_id,
+    versionId: row.version_id,
+    input: row.input,
+    output: row.output,
+    tokenCount: row.token_count,
+    latencyMs: row.latency_ms,
+    cost: row.cost ?? undefined,
+    error: row.error ?? undefined,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Build the HTML for the webview, loading the React app from the built dist
+ * or from the source files in development mode.
+ */
+async function getWebviewContent(webview: vscode.Webview, context: vscode.ExtensionContext): Promise<string> {
+  // Read the webview HTML template
+  const htmlPath = vscode.Uri.joinPath(context.extensionUri, 'src', 'webview.html');
+  let html = await readWebviewHtml(htmlPath);
+
+  // Replace CSP placeholder
+  html = html.replace(/{{cspSource}}/g, webview.cspSource);
+
+  // Replace script sources with webview URIs
+  const bridgeUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview-bridge.js'));
+  const appUri = webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview-app.js'));
+
+  html = html.replace('/webview-bridge.ts', bridgeUri.toString());
+  html = html.replace('/webview-app.tsx', appUri.toString());
+
+  return html;
+}
+
+async function readWebviewHtml(uri: vscode.Uri): Promise<string> {
+  try {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    return Buffer.from(bytes).toString('utf-8');
+  } catch {
+    // Fallback: return a minimal HTML if the file can't be read
+    return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'unsafe-inline'; img-src ${webview.cspSource} data:;">
   <title>PromptSentry Workbench</title>
-  <style>
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      margin: 0;
-      padding: 20px;
-      background-color: var(--vscode-editor-background);
-      color: var(--vscode-editor-foreground);
-    }
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-    h1 {
-      color: var(--vscode-titleBar-activeForeground);
-      border-bottom: 1px solid var(--vscode-panel-border);
-      padding-bottom: 10px;
-    }
-    .status {
-      padding: 10px;
-      margin: 10px 0;
-      border-radius: 4px;
-      background-color: var(--vscode-input-background);
-      border: 1px solid var(--vscode-input-border);
-    }
-    .status.success {
-      border-color: #4ec9b0;
-      color: #4ec9b0;
-    }
-    .status.error {
-      border-color: #f44747;
-      color: #f44747;
-    }
-    .status.info {
-      border-color: #007acc;
-      color: #007acc;
-    }
-    button {
-      background-color: var(--vscode-button-background);
-      color: var(--vscode-button-foreground);
-      border: none;
-      padding: 8px 16px;
-      border-radius: 2px;
-      cursor: pointer;
-      font-size: 14px;
-    }
-    button:hover {
-      background-color: var(--vscode-button-hoverBackground);
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      margin-top: 20px;
-    }
-    .card {
-      background-color: var(--vscode-editor-background);
-      border: 1px solid var(--vscode-panel-border);
-      border-radius: 4px;
-      padding: 15px;
-    }
-    .card h3 {
-      margin-top: 0;
-      color: var(--vscode-titleBar-activeForeground);
-    }
-    pre {
-      background-color: var(--vscode-textCodeBlock-background);
-      padding: 10px;
-      border-radius: 4px;
-      overflow-x: auto;
-      font-size: 12px;
-    }
-    .loading {
-      display: inline-block;
-      width: 20px;
-      height: 20px;
-      border: 2px solid var(--vscode-input-border);
-      border-radius: 50%;
-      border-top-color: var(--vscode-button-background);
-      animation: spin 1s ease-in-out infinite;
-      margin-right: 10px;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-  </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🚀 PromptSentry Workbench</h1>
-    <div id="status" class="status info">
-      <span class="loading"></span>
-      Initializing...
-    </div>
-    <div class="grid">
-      <div class="card">
-        <h3>Quick Actions</h3>
-        <button onclick="vscode.postMessage({type: 'openApiConfig'})">Configure API</button>
-        <button onclick="vscode.postMessage({type: 'newPrompt'})">New Prompt</button>
-        <button onclick="vscode.postMessage({type: 'refresh'})">Refresh</button>
-      </div>
-      <div class="card">
-        <h3>Status</h3>
-        <div id="status-details">Connecting to extension...</div>
-      </div>
-    </div>
-    <div class="card" style="margin-top: 20px;">
-      <h3>Instructions</h3>
-      <p>PromptSentry Workbench helps you manage, version, and test prompts against OpenAI-compatible endpoints.</p>
-      <ul>
-        <li>Use the <strong>PromptSentry</strong> sidebar to browse prompts and versions</li>
-        <li>Click <strong>Open Workbench</strong> to interact with prompts in this panel</li>
-        <li>Configure your API endpoint via <strong>PromptSentry: Configure API</strong></li>
-      </ul>
+  <div id="root">
+    <div style="padding:20px;text-align:center;color:#e0e0e0;">
+      <h1>🚀 PromptSentry Workbench</h1>
+      <p>Loading...</p>
     </div>
   </div>
-  <script>
-    const vscode = acquireVsCodeApi();
-    
-    // Send a ready message
-    vscode.postMessage({ type: 'ready' });
-    
-    // Listen for messages from extension
-    window.addEventListener('message', event => {
-      const message = event.data;
-      const statusEl = document.getElementById('status');
-      const statusDetails = document.getElementById('status-details');
-      
-      switch (message.type) {
-        case 'ready':
-          statusEl.className = 'status success';
-          statusEl.innerHTML = '✅ Connected to PromptSentry';
-          statusDetails.textContent = 'Extension is active and ready.';
-          break;
-        case 'error':
-          statusEl.className = 'status error';
-          statusEl.innerHTML = '❌ ' + message.message;
-          break;
-        case 'prompts':
-          statusDetails.textContent = 'Loaded ' + message.data.length + ' prompts.';
-          break;
-        case 'apiConfig':
-          if (message.data) {
-            statusDetails.textContent = 'API: ' + message.data.baseUrl;
-          }
-          break;
-      }
-    });
-  </script>
 </body>
 </html>`;
+  }
 }
 
 // ─── Core API Wrappers ───────────────────────────────────────────────────────
@@ -1092,6 +779,265 @@ async function createVersion(promptId: string, data: PromptVersionCreate): Promi
     throw new Error('Versioning engine not initialized');
   }
   return versioningEngine.createVersion(promptId, data);
+}
+
+/**
+ * Execute a prompt version against the configured endpoint and persist the run.
+ * This is the version used by the webview API bridge.
+ */
+async function executePrompt(promptId: string, input: string, versionId?: string): Promise<any> {
+  if (!openAIClient) {
+    throw { status: 400, message: 'OpenAI client not initialized' };
+  }
+  if (!db) {
+    throw { status: 500, message: 'Database not initialized' };
+  }
+
+  const prompt = mapPromptRow(db.connection.prepare('SELECT * FROM prompts WHERE id = ?').get(promptId));
+  if (!prompt) {
+    throw { status: 404, message: `Prompt ${promptId} not found` };
+  }
+
+  const version = versionId
+    ? mapVersionRow(db.connection.prepare('SELECT * FROM prompt_versions WHERE id = ?').get(versionId))
+    : mapVersionRow(db.connection.prepare('SELECT * FROM prompt_versions WHERE prompt_id = ? ORDER BY version_number DESC LIMIT 1').get(promptId));
+
+  if (!version) {
+    throw { status: 404, message: versionId ? `Version ${versionId} not found` : 'Prompt has no versions' };
+  }
+
+  const result = await openAIClient.execute(
+    {
+      promptId,
+      versionId: version.id,
+      input,
+      model: version.model || apiConfig?.defaultModel || 'gpt-4',
+      temperature: version.temperature,
+      maxTokens: version.maxTokens,
+      systemPrompt: version.systemPrompt,
+    },
+    { saveRun: true },
+  );
+
+  // Read back the newest run for this version
+  const row = db.connection
+    .prepare('SELECT * FROM prompt_runs WHERE version_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1')
+    .get(version.id) as any;
+  if (row) return mapRunRow(row);
+
+  return {
+    ...result.run,
+    id: require('node:crypto').randomUUID(),
+    output: result.output,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Create a test set with inputs.
+ */
+function createTestSet(data: any): any {
+  if (!db) {
+    throw { status: 500, message: 'Database not initialized' };
+  }
+  const name = data?.name?.trim();
+  if (!name) throw { status: 400, message: 'name is required' };
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const inputs = data?.inputs || [];
+  const conn = db.connection;
+
+  conn.transaction(() => {
+    conn.prepare(
+      `INSERT INTO test_sets (id, name, description, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(id, name, data?.description?.trim() ?? null, now, now);
+
+    const insertInput = conn.prepare(
+      `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
+    );
+    for (const input of inputs) {
+      insertInput.run(crypto.randomUUID(), id, input);
+    }
+  })();
+
+  const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+  const testSet = mapTestSetRow(row);
+
+  // Populate inputs
+  const inputRows = conn.prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ?').all(id) as { input: string }[];
+  testSet.inputs = inputRows.map(r => r.input);
+
+  return testSet;
+}
+
+/**
+ * Update a test set.
+ */
+function updateTestSet(id: string, data: any): any {
+  if (!db) {
+    throw { status: 500, message: 'Database not initialized' };
+  }
+  const conn = db.connection;
+  const existing = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+  if (!existing) throw { status: 404, message: `Test set ${id} not found` };
+
+  const name = data?.name !== undefined ? data.name.trim() || existing.name : existing.name;
+  const description = data?.description !== undefined ? data.description.trim() || undefined : existing.description;
+  const now = new Date().toISOString();
+
+  conn.transaction(() => {
+    conn.prepare(
+      `UPDATE test_sets SET name = ?, description = ?, updated_at = ? WHERE id = ?`,
+    ).run(name, description ?? null, now, id);
+
+    // Replace all inputs
+    conn.prepare('DELETE FROM test_set_inputs WHERE test_set_id = ?').run(id);
+    const insertInput = conn.prepare(
+      `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
+    );
+    if (data?.inputs) {
+      for (const input of data.inputs) {
+        insertInput.run(crypto.randomUUID(), id, input);
+      }
+    }
+  })();
+
+  const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+  const testSet = mapTestSetRow(row);
+
+  // Populate inputs
+  const inputRows = conn.prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ?').all(id) as { input: string }[];
+  testSet.inputs = inputRows.map(r => r.input);
+
+  return testSet;
+}
+
+/**
+ * Run a test set: iterate over all inputs, execute the prompt/version for each,
+ * and persist results.
+ */
+async function runTestSet(testSetId: string, promptId: string, versionId: string): Promise<any[]> {
+  if (!db) {
+    throw { status: 500, message: 'Database not initialized' };
+  }
+  if (!openAIClient) {
+    throw { status: 400, message: 'OpenAI client not initialized' };
+  }
+  if (!apiConfig) {
+    throw { status: 400, message: 'API not configured' };
+  }
+
+  const conn = db.connection;
+
+  // Get test set
+  const testSetRow = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(testSetId) as any;
+  if (!testSetRow) throw { status: 404, message: 'Test set not found' };
+
+  // Get inputs
+  const inputRows = conn.prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ?').all(testSetId) as { input: string }[];
+
+  // Get prompt metadata
+  const promptRow = conn.prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompts WHERE id = ?').get(promptId) as any;
+  if (!promptRow) throw { status: 404, message: 'Prompt not found' };
+
+  // Get version metadata
+  const versionRow = conn.prepare('SELECT model, temperature, maxTokens, system_prompt FROM prompt_versions WHERE id = ?').get(versionId) as any;
+  if (!versionRow) throw { status: 404, message: 'Version not found' };
+
+  const results: any[] = [];
+
+  for (const inputRow of inputRows) {
+    const startTime = Date.now();
+    const resultId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+
+    try {
+      const model = versionRow.model || promptRow.model;
+      const temperature = versionRow.temperature ?? promptRow.temperature;
+      const maxTokens = versionRow.maxTokens ?? promptRow.maxTokens;
+      const systemPrompt = versionRow.system_prompt ?? promptRow.system_prompt;
+
+      const messages: Array<{ role: string; content: string }> = [];
+      if (systemPrompt) {
+        messages.push({ role: 'system', content: systemPrompt });
+      }
+      messages.push({ role: 'user', content: inputRow.input });
+
+      const response = await fetch(`${apiConfig.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiConfig.apiKey ? { Authorization: `Bearer ${apiConfig.apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature,
+          max_tokens: maxTokens,
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`API error ${response.status}: ${errorText}`);
+      }
+
+      const apiResponse = await response.json() as {
+        choices: Array<{ message: { content: string } }>;
+        usage?: { completion_tokens?: number };
+      };
+
+      const output = apiResponse.choices[0]?.message?.content ?? '';
+      const latencyMs = Date.now() - startTime;
+      const tokenCount = apiResponse.usage?.completion_tokens ?? Math.ceil(output.length / 4);
+
+      // Save result
+      conn.prepare(
+        `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(resultId, testSetId, promptId, versionId, inputRow.input, output, tokenCount, latencyMs, createdAt);
+
+      results.push({
+        id: resultId,
+        testSetId,
+        promptId,
+        versionId,
+        input: inputRow.input,
+        output,
+        tokenCount,
+        latencyMs,
+        createdAt,
+      });
+    } catch (error) {
+      const latencyMs = Date.now() - startTime;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const resultId = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+
+      conn.prepare(
+        `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(resultId, testSetId, promptId, versionId, inputRow.input, '', 0, latencyMs, errorMessage, createdAt);
+
+      results.push({
+        id: resultId,
+        testSetId,
+        promptId,
+        versionId,
+        input: inputRow.input,
+        output: '',
+        tokenCount: 0,
+        latencyMs,
+        error: errorMessage,
+        createdAt,
+      });
+    }
+  }
+
+  return results;
 }
 
 // ─── Activation ──────────────────────────────────────────────────────────────
@@ -1382,9 +1328,9 @@ export function activate(context: vscode.ExtensionContext) {
       }),
 
       // Open Panel: opens/closes the webview panel
-      vscode.commands.registerCommand('promptsentry.openPanel', (args?: { promptId?: string }) => {
+      vscode.commands.registerCommand('promptsentry.openPanel', async (args?: { promptId?: string }) => {
         if (!webviewPanel) {
-          webviewPanel = createWebviewPanel(context, args?.promptId);
+          webviewPanel = await createWebviewPanel(context, args?.promptId);
         } else {
           webviewPanel.reveal(vscode.ViewColumn.Two);
         }
