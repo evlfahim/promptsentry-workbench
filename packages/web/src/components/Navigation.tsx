@@ -8,6 +8,7 @@ export function Navigation() {
   const navItems = [
     { path: '/', label: 'Dashboard' },
     { path: '/prompts', label: 'Prompts' },
+    { path: '/runs', label: 'Runs' },
     { path: '/api-config', label: 'API Config' },
   ];
 

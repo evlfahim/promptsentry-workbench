@@ -1,5 +1,13 @@
-import React, { type ReactNode, createContext, useReducer, useContext } from 'react';
+import React, { type ReactNode, createContext, useReducer, useContext, useEffect } from 'react';
 import type { Prompt, PromptVersion, PromptRun, APIConfig, TestSet } from '@sentry-prompt/core';
+import { CoreService } from './services/coreService';
+
+// ─── Service instance ────────────────────────────────────────────────────────
+
+// In a real app, this would be configured via environment variables or a config file.
+// For now, we use an in-memory SQLite database.
+const DB_PATH = ':memory:';
+export const service = new CoreService(DB_PATH);
 
 // ─── Store State ──────────────────────────────────────────────────────────────
 
@@ -105,6 +113,38 @@ const StoreContext = createContext<StoreContextType | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(storeReducer, initialState);
+
+  // Load data from core on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function loadData() {
+      dispatch({ type: 'SET_LOADING', payload: true });
+      try {
+        const [prompts, apiConfig] = await Promise.all([
+          service.listPrompts(),
+          service.getAPIConfig(),
+        ]);
+        if (!cancelled) {
+          dispatch({ type: 'SET_PROMPTS', payload: prompts });
+          if (apiConfig) {
+            dispatch({ type: 'SET_API_CONFIG', payload: apiConfig });
+            service.setAPIConfig(apiConfig);
+          }
+        }
+      } catch (err) {
+        if (!cancelled) {
+          dispatch({ type: 'SET_ERROR', payload: err instanceof Error ? err.message : 'Failed to load data' });
+        }
+      } finally {
+        if (!cancelled) {
+          dispatch({ type: 'SET_LOADING', payload: false });
+        }
+      }
+    }
+    loadData();
+    return () => { cancelled = true; };
+  }, []);
+
   return (
     <StoreContext.Provider value={{ state, dispatch }}>
       {children}
@@ -113,7 +153,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 }
 
 export function useStore(): StoreContextType {
-  const ctx = React.useContext(StoreContext);
+  const ctx = useContext(StoreContext);
   if (!ctx) throw new Error('useStore must be used within StoreProvider');
   return ctx;
 }

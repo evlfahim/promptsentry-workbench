@@ -5,6 +5,7 @@ import { Dashboard } from './views/Dashboard';
 import { PromptsList } from './views/PromptsList';
 import { PromptDetail } from './views/PromptDetail';
 import { ApiConfig } from './views/ApiConfig';
+import { Runs } from './views/Runs';
 
 export function App() {
   return (
@@ -18,6 +19,7 @@ export function App() {
               <Route path="/prompts" element={<PromptsList />} />
               <Route path="/prompts/:id" element={<PromptDetail />} />
               <Route path="/api-config" element={<ApiConfig />} />
+              <Route path="/runs" element={<Runs />} />
             </Routes>
           </main>
         </div>
