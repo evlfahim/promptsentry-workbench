@@ -56,6 +56,21 @@
         "command": "promptsentry.openApiConfig",
         "title": "PromptSentry: Configure API",
         "icon": "$(gear)"
+      },
+      {
+        "command": "promptsentry.startWatching",
+        "title": "PromptSentry: Start File Watching",
+        "icon": "$(folder-library)"
+      },
+      {
+        "command": "promptsentry.stopWatching",
+        "title": "PromptSentry: Stop File Watching",
+        "icon": "$(debug-disconnect)"
+      },
+      {
+        "command": "promptsentry.watchingStatus",
+        "title": "PromptSentry: File Watching Status",
+        "icon": "$(info)"
       }
     ],
     "views": {
@@ -93,6 +108,15 @@
         },
         {
           "command": "promptsentry.openApiConfig"
+        },
+        {
+          "command": "promptsentry.startWatching"
+        },
+        {
+          "command": "promptsentry.stopWatching"
+        },
+        {
+          "command": "promptsentry.watchingStatus"
         }
       ],
       "view/title": [
@@ -125,6 +149,21 @@
           "type": "string",
           "default": "llama3",
           "description": "Default model to use for prompt execution"
+        },
+        "promptsentry.watchDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Directory to watch for .prompt files. When set, the extension automatically syncs file changes to the database."
+        },
+        "promptsentry.autoCreatePrompts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create prompts when new .prompt files are detected in the watched directory."
+        },
+        "promptsentry.autoUpdateVersions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create new versions when .prompt files change in the watched directory."
         }
       }
     }
@@ -136,7 +175,7 @@
     "package": "tsc -p ./ --noEmit && node esbuild.cjs",
     "build": "tsc && node esbuild.cjs",
     "lint": "eslint src/",
-    "test": "echo \"No tests yet\" && exit 0",
+    "test": "node --experimental-vm-modules ../../node_modules/.bin/jest --config jest.config.js",
     "clean": "rm -rf dist"
   },
   "devDependencies": {
@@ -144,11 +183,14 @@
     "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "^22.0.0",
+    "@types/jest": "^29.5.14",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
     "glob": "^11.0.0",
+    "jest": "^29.7.0",
     "minimatch": "^10.0.0",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.0",
     "esbuild": "^0.24.0",
     "@vscode/test-cli": "^0.0.10",

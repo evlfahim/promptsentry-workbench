@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
 import crypto from 'node:crypto';
 import {
   DB,
@@ -16,6 +17,13 @@ import {
   type ComparisonResult,
   type LexicalDiff,
 } from '@sentry-prompt/core';
+import {
+  createFileWatcher,
+  startWatching,
+  stopWatching,
+  getWatchingStatus,
+  type FileWatcherState,
+} from './file-watcher.js';
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +35,7 @@ let treeView: vscode.TreeView<PromptTreeNode> | undefined;
 let treeDataProvider: PromptSentryTreeDataProvider | undefined;
 let webviewPanel: vscode.WebviewPanel | undefined;
 let apiConfig: APIConfig | undefined;
+let fileWatcherState: FileWatcherState | undefined;
 
 // ─── Tree View Types ─────────────────────────────────────────────────────────
 
@@ -262,6 +271,37 @@ async function handleApiRequest(method: string, path: string, body: any): Promis
     }
     apiConfig = next;
     return next;
+  }
+
+  // ── File Watcher ──────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/api/file-watcher') {
+    if (!fileWatcherState) {
+      return { watching: false, directory: '', fileCount: 0 };
+    }
+    return getWatchingStatus(fileWatcherState);
+  }
+  if (method === 'POST' && path === '/api/file-watcher/start') {
+    if (!db || !versioningEngine || !fileWatcherState) {
+      throw { status: 500, message: 'File watcher not initialized' };
+    }
+    const dirPath = body?.directory;
+    if (!dirPath) throw { status: 400, message: 'directory is required' };
+    const results = startWatching(fileWatcherState, db, versioningEngine, dirPath);
+    // Update VS Code settings
+    const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
+    await vscodeConfig.update('watchDirectory', dirPath, true);
+    await vscodeConfig.update('autoCreatePrompts', true, true);
+    await vscodeConfig.update('autoUpdateVersions', true, true);
+    return results;
+  }
+  if (method === 'POST' && path === '/api/file-watcher/stop') {
+    if (!fileWatcherState) {
+      return { watching: false, directory: '', fileCount: 0 };
+    }
+    stopWatching(fileWatcherState);
+    const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
+    await vscodeConfig.update('watchDirectory', '', true);
+    return { watching: false, directory: '', fileCount: 0 };
   }
 
   // ── Prompts ─────────────────────────────────────────────────────────────
@@ -1068,6 +1108,23 @@ export function activate(context: vscode.ExtensionContext) {
     // OpenAIClient: executes prompts against OpenAI-compatible endpoints
     openAIClient = new OpenAIClient(db, apiConfig);
 
+    // ── Initialize file watcher ─────────────────────────────────────────────
+    const fwConfig = vscode.workspace.getConfiguration('promptsentry');
+    const watchDir = fwConfig.get<string>('watchDirectory', '');
+    if (watchDir && fs.existsSync(watchDir)) {
+      fileWatcherState = createFileWatcher(context, db, versioningEngine);
+    } else {
+      fileWatcherState = {
+        watcher: undefined,
+        lastSeenFiles: new Map(),
+        config: {
+          watchDirectory: '',
+          autoCreate: true,
+          autoUpdate: true,
+        },
+      };
+    }
+
     // ── Register tree view ──────────────────────────────────────────────────
     const treeDataProvider = new PromptSentryTreeDataProvider();
     treeView = vscode.window.createTreeView('promptsentryView', {
@@ -1384,6 +1441,86 @@ export function activate(context: vscode.ExtensionContext) {
         await vscodeConfig.update('defaultModel', defaultModel, true);
 
         vscode.window.showInformationMessage('PromptSentry: API configuration saved');
+      }),
+
+      // Start File Watching: watch a directory for .prompt files
+      vscode.commands.registerCommand('promptsentry.startWatching', async () => {
+        if (!db || !versioningEngine) {
+          vscode.window.showErrorMessage('PromptSentry: Not initialized');
+          return;
+        }
+
+        // Pick a directory
+        const uri = await vscode.window.showOpenDialog({
+          canSelectFiles: false,
+          canSelectFolders: true,
+          canSelectMany: false,
+          title: 'Select directory to watch for .prompt files',
+        });
+
+        if (!uri || uri.length === 0) {
+          return;
+        }
+
+        const dirPath = uri[0].fsPath;
+
+        // Check if already watching this directory
+        if (fileWatcherState && fileWatcherState.config.watchDirectory === dirPath) {
+          vscode.window.showInformationMessage('PromptSentry: Already watching this directory');
+          return;
+        }
+
+        // Start watching
+        const results = startWatching(fileWatcherState!, db, versioningEngine, dirPath);
+
+        // Update VS Code settings
+        const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
+        await vscodeConfig.update('watchDirectory', dirPath, true);
+        await vscodeConfig.update('autoCreatePrompts', true, true);
+        await vscodeConfig.update('autoUpdateVersions', true, true);
+
+        if (results.errors.length > 0) {
+          vscode.window.showWarningMessage(
+            `PromptSentry: Started watching ${dirPath} with ${results.errors.length} error(s)`,
+          );
+        } else {
+          vscode.window.showInformationMessage(
+            `PromptSentry: Watching ${dirPath} — ${results.created} new, ${results.updated} updated`,
+          );
+        }
+      }),
+
+      // Stop File Watching
+      vscode.commands.registerCommand('promptsentry.stopWatching', () => {
+        if (!fileWatcherState) {
+          vscode.window.showInformationMessage('PromptSentry: Not currently watching any directory');
+          return;
+        }
+
+        stopWatching(fileWatcherState);
+
+        // Update VS Code settings
+        const vscodeConfig = vscode.workspace.getConfiguration('promptsentry');
+        vscodeConfig.update('watchDirectory', '', true);
+
+        vscode.window.showInformationMessage('PromptSentry: Stopped watching directory');
+      }),
+
+      // Show File Watching Status
+      vscode.commands.registerCommand('promptsentry.watchingStatus', () => {
+        if (!fileWatcherState) {
+          vscode.window.showInformationMessage('PromptSentry: Not currently watching any directory');
+          return;
+        }
+
+        const status = getWatchingStatus(fileWatcherState);
+        if (status.watching) {
+          vscode.window.showInformationMessage(
+            `PromptSentry: Watching ${status.directory} — ${status.fileCount} file(s) tracked`,
+          );
+        } else {
+          vscode.window.showInformationMessage('PromptSentry: Not currently watching any directory');
+        }
       }),
     ];
 

@@ -80,6 +80,14 @@ export const service = {
     request<any[]>('GET', `/test-sets/${encodeURIComponent(testSetId)}/results`),
   deleteTestRunResults: (testSetId: string) =>
     request<void>('DELETE', `/test-sets/${encodeURIComponent(testSetId)}/results`),
+
+  // ── File Watcher ──────────────────────────────────────────────────────────
+  getFileWatcherStatus: () =>
+    request<{ watching: boolean; directory: string; fileCount: number }>('GET', '/file-watcher'),
+  startFileWatcher: (directory: string) =>
+    request<{ created: number; updated: number; unchanged: number; deleted: number; errors: string[] }>('POST', '/file-watcher/start', { directory }),
+  stopFileWatcher: () =>
+    request<{ watching: boolean; directory: string; fileCount: number }>('POST', '/file-watcher/stop'),
 };
 
 // ─── Store State ──────────────────────────────────────────────────────────────

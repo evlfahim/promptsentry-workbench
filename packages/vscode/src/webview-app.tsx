@@ -621,6 +621,9 @@ export function Dashboard({ navigate, navigateToPrompt }: DashboardProps) {
         </button>
       </div>
 
+      {/* File Watching Status */}
+      <FileWatcherStatus navigate={navigate} />
+
       {state.prompts.length === 0 && (
         <div style={S.emptyState}>
           <p style={S.emptyText}>No prompts yet. Create your first prompt to get started.</p>
@@ -640,6 +643,140 @@ export function Dashboard({ navigate, navigateToPrompt }: DashboardProps) {
             </div>
           ))}
         </div>
+      )}
+    </div>
+  );
+}
+
+// ─── File Watcher Status ──────────────────────────────────────────────────────
+
+interface FileWatcherStatusProps {
+  navigate: (route: Route) => void;
+}
+
+export function FileWatcherStatus({ navigate }: FileWatcherStatusProps) {
+  const { dispatch } = useStore();
+  const [status, setStatus] = useState<{ watching: boolean; directory: string; fileCount: number }>({
+    watching: false,
+    directory: '',
+    fileCount: 0,
+  });
+  const [showStart, setShowStart] = useState(false);
+  const [newDir, setNewDir] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadStatus() {
+    try {
+      const s = await service.getFileWatcherStatus();
+      setStatus(s);
+    } catch {
+      // Ignore — status will show as not watching
+    }
+  }
+
+  React.useEffect(() => {
+    loadStatus();
+  }, []);
+
+  async function handleStart(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newDir.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const results = await service.startFileWatcher(newDir.trim());
+      setShowStart(false);
+      setNewDir('');
+      await loadStatus();
+      if (results.created > 0 || results.updated > 0) {
+        dispatch({ type: 'SET_ERROR', payload: null });
+        // Refresh data
+        const [prompts, versions, runs, testSets] = await Promise.all([
+          service.listPrompts(),
+          service.listVersions(),
+          service.listRuns(),
+          service.listTestSets(),
+        ]);
+        dispatch({ type: 'SET_PROMPTS', payload: prompts });
+        dispatch({ type: 'SET_VERSIONS', payload: versions });
+        dispatch({ type: 'SET_RUNS', payload: runs });
+        dispatch({ type: 'SET_TEST_SETS', payload: testSets });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start file watcher');
+    }
+    setLoading(false);
+  }
+
+  async function handleStop() {
+    if (!confirm('Stop file watching?')) return;
+    try {
+      await service.stopFileWatcher();
+      await loadStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop file watcher');
+    }
+  }
+
+  const watchingStyle = {
+    ...S.statCard,
+    borderTop: `3px solid ${status.watching ? '#34d399' : '#ef4444'}`,
+  };
+
+  return (
+    <div style={{ marginBottom: '32px' }}>
+      <h2 style={{ ...S.sectionTitle, marginBottom: '16px' }}>File Watcher</h2>
+      <div style={{ ...S.statCard, padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div>
+          <div style={{ fontSize: '16px', fontWeight: 600, color: status.watching ? '#34d399' : '#ef4444' }}>
+            {status.watching ? '● Watching' : '○ Not Watching'}
+          </div>
+          {status.watching && (
+            <div style={{ fontSize: '13px', color: '#a0a0b0', marginTop: '4px' }}>
+              {status.directory} — {status.fileCount} file(s) tracked
+            </div>
+          )}
+          {!status.watching && (
+            <div style={{ fontSize: '13px', color: '#a0a0b0', marginTop: '4px' }}>
+              Sync .prompt files from a directory automatically
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          {!status.watching && (
+            <button style={S.secondaryButton} onClick={() => setShowStart(!showStart)}>
+              {showStart ? 'Cancel' : '+ Start Watching'}
+            </button>
+          )}
+          {status.watching && (
+            <button style={{ ...S.secondaryButton, color: '#ef4444' }} onClick={handleStop}>
+              Stop
+            </button>
+          )}
+        </div>
+      </div>
+
+      {error && <div style={{ ...S.errorBox, marginTop: '8px' }}>{error}</div>}
+
+      {showStart && (
+        <form onSubmit={handleStart} style={{ ...S.createForm, marginTop: '12px' }}>
+          <h3 style={S.formTitle}>Start File Watching</h3>
+          <div style={S.formGroup}>
+            <label style={S.label}>Directory Path</label>
+            <input
+              type="text"
+              value={newDir}
+              onChange={e => setNewDir(e.target.value)}
+              placeholder="/path/to/prompts"
+              style={S.input}
+              required
+            />
+          </div>
+          <button type="submit" style={S.submitButton} disabled={loading}>
+            {loading ? 'Starting...' : 'Start Watching'}
+          </button>
+        </form>
       )}
     </div>
   );
