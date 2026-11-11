@@ -1,8 +1,8 @@
 {
   "name": "@sentry-prompt/vscode",
-  "version": "0.1.0",
   "displayName": "PromptSentry Workbench",
   "description": "Local-first prompt workbench with git-style versioning and execution against OpenAI-compatible endpoints",
+  "version": "0.1.0",
   "publisher": "sentry-prompt",
   "author": "Sentry",
   "repository": {
@@ -12,37 +12,68 @@
   "engines": {
     "vscode": "^1.95.0"
   },
+  "icon": "resources/icon.png",
   "categories": [
     "Other"
   ],
+  "keywords": [
+    "prompt",
+    "llm",
+    "openai",
+    "ollama",
+    "workbench"
+  ],
   "main": "./dist/extension.js",
+  "activationEvents": [],
   "contributes": {
     "commands": [
       {
         "command": "promptsentry.refresh",
-        "title": "PromptSentry: Refresh Prompts"
+        "title": "PromptSentry: Refresh Prompts",
+        "icon": "$(refresh)"
       },
       {
         "command": "promptsentry.newPrompt",
-        "title": "PromptSentry: New Prompt"
+        "title": "PromptSentry: New Prompt",
+        "icon": "$(add)"
       },
       {
         "command": "promptsentry.runPrompt",
-        "title": "PromptSentry: Run Prompt"
+        "title": "PromptSentry: Run Prompt",
+        "icon": "$(play)"
       },
       {
         "command": "promptsentry.compare",
-        "title": "PromptSentry: Compare Versions"
+        "title": "PromptSentry: Compare Versions",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "promptsentry.openPanel",
+        "title": "PromptSentry: Open Workbench",
+        "icon": "$(output)"
+      },
+      {
+        "command": "promptsentry.openApiConfig",
+        "title": "PromptSentry: Configure API",
+        "icon": "$(gear)"
       }
     ],
     "views": {
       "explorer": [
         {
           "id": "promptsentryView",
-          "name": "PromptSentry"
+          "name": "PromptSentry",
+          "icon": "$(heart)",
+          "contextualTitle": "PromptSentry Workbench"
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "promptsentryView",
+        "contents": "No prompts yet.\n[Create a Prompt](command:promptsentry.newPrompt)\n[Open Workbench](command:promptsentry.openPanel)"
+      }
+    ],
     "menus": {
       "commandPalette": [
         {
@@ -56,16 +87,54 @@
         },
         {
           "command": "promptsentry.compare"
+        },
+        {
+          "command": "promptsentry.openPanel"
+        },
+        {
+          "command": "promptsentry.openApiConfig"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "promptsentry.refresh",
+          "when": "view == promptsentryView",
+          "group": "navigation"
+        },
+        {
+          "command": "promptsentry.newPrompt",
+          "when": "view == promptsentryView",
+          "group": "navigation"
         }
       ]
+    },
+    "configuration": {
+      "title": "PromptSentry",
+      "properties": {
+        "promptsentry.apiBaseUrl": {
+          "type": "string",
+          "default": "http://localhost:11434/v1",
+          "description": "Base URL for the OpenAI-compatible API endpoint (e.g., Ollama, vLLM)"
+        },
+        "promptsentry.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for the OpenAI-compatible endpoint (leave empty for local models)"
+        },
+        "promptsentry.defaultModel": {
+          "type": "string",
+          "default": "llama3",
+          "description": "Default model to use for prompt execution"
+        }
+      }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "tsc -p ./ --noEmit && node esbuild.mjs",
-    "build": "tsc",
+    "package": "tsc -p ./ --noEmit && node esbuild.cjs",
+    "build": "tsc && node esbuild.cjs",
     "lint": "eslint src/",
     "test": "echo \"No tests yet\" && exit 0",
     "clean": "rm -rf dist"
@@ -74,6 +143,7 @@
     "@types/vscode": "^1.95.0",
     "@types/glob": "^8.1.0",
     "@types/mocha": "^10.0.10",
+    "@types/node": "^22.0.0",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",

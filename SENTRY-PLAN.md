@@ -38,7 +38,7 @@ Core logic in `@sentry-prompt/core` handles DB, API, and diffing; VS Code extens
 - [x] 7. Build prompt editor and run panel, connect to core API, and verify saving and executing prompts
 - [x] 8. Implement side-by-side comparison view with diffs and metrics, and verify rendering of answer differences
 - [x] 9. Add test set support for batch runs and verify A/B comparison workflow across multiple inputs
-- [ ] 10. Scaffold VS Code extension with `extension.ts`, manifest, and command palette integration
+- [x] 10. Scaffold VS Code extension with `extension.ts`, manifest, and command palette integration
 - [ ] 11. Integrate `@sentry-prompt/core` into extension, expose DB and API methods, and verify extension imports work
 - [ ] 12. Embed Webview in extension, bridge messages between core and UI, and verify UI renders in VS Code
 - [ ] 13. Add file watcher to sync external prompt files with local versions, and verify auto-detection of changes
