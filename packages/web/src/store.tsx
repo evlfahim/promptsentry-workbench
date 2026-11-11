@@ -129,16 +129,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async function loadData() {
       dispatch({ type: 'SET_LOADING', payload: true });
       try {
-        const [prompts, versions, runs, apiConfig] = await Promise.all([
+        const [prompts, versions, runs, testSets, apiConfig] = await Promise.all([
           service.listPrompts(),
           service.listVersions(),
           service.listRuns(),
+          service.listTestSets(),
           service.getAPIConfig(),
         ]);
         if (!cancelled) {
           dispatch({ type: 'SET_PROMPTS', payload: prompts });
           dispatch({ type: 'SET_VERSIONS', payload: versions });
           dispatch({ type: 'SET_RUNS', payload: runs });
+          dispatch({ type: 'SET_TEST_SETS', payload: testSets });
           dispatch({ type: 'SET_API_CONFIG', payload: apiConfig ?? undefined });
           dispatch({ type: 'SET_ERROR', payload: null });
         }

@@ -393,6 +393,50 @@ export class ComparisonEngine {
     return results;
   }
 
+  // ─── Cost estimation ──────────────────────────────────────────────────────
+
+  /**
+   * Estimate the cost of an API call based on model and token counts.
+   * Uses rough per-token pricing from common OpenAI-compatible models.
+   */
+  estimateCost(params: { model: string; promptTokens: number; completionTokens: number }): number {
+    const model = params.model.toLowerCase();
+    let promptPricePer1K = 0.000005; // default $0.005/1K tokens
+    let completionPricePer1K = 0.000015; // default $0.015/1K tokens
+
+    // GPT-4 pricing
+    if (model.includes('gpt-4')) {
+      if (model.includes('4o')) {
+        promptPricePer1K = 0.0000025; // $0.0025/1K
+        completionPricePer1K = 0.00001; // $0.01/1K
+      } else if (model.includes('4-turbo')) {
+        promptPricePer1K = 0.00001; // $0.01/1K
+        completionPricePer1K = 0.00003; // $0.03/1K
+      } else if (model.includes('4-32k')) {
+        promptPricePer1K = 0.00006; // $0.06/1K
+        completionPricePer1K = 0.00018; // $0.18/1K
+      } else {
+        promptPricePer1K = 0.00003; // $0.03/1K
+        completionPricePer1K = 0.00006; // $0.06/1K
+      }
+    }
+    // GPT-3.5 pricing
+    else if (model.includes('gpt-3')) {
+      promptPricePer1K = 0.0000015; // $0.0015/1K
+      completionPricePer1K = 0.000002; // $0.002/1K
+    }
+    // Ollama/local models are typically free
+    else if (model.includes('ollama') || model.includes('local')) {
+      promptPricePer1K = 0;
+      completionPricePer1K = 0;
+    }
+
+    const promptCost = (params.promptTokens / 1000) * promptPricePer1K;
+    const completionCost = (params.completionTokens / 1000) * completionPricePer1K;
+
+    return Math.round((promptCost + completionCost) * 10000) / 10000;
+  }
+
   // ─── Test set management ──────────────────────────────────────────────────
 
   /**

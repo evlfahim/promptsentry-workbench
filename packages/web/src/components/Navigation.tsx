@@ -9,6 +9,7 @@ export function Navigation() {
     { path: '/', label: 'Dashboard' },
     { path: '/prompts', label: 'Prompts' },
     { path: '/runs', label: 'Runs' },
+    { path: '/test-sets', label: 'Test Sets' },
     { path: '/api-config', label: 'API Config' },
   ];
 

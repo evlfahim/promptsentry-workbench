@@ -12,6 +12,11 @@
  *   GET    /api/runs/:id              DELETE /api/runs/:id
  *   POST   /api/runs/compare          { runIdA, runIdB }
  *   POST   /api/versions/compare      { versionIdA, versionIdB }
+ *   GET    /api/test-sets             POST /api/test-sets
+ *   GET    /api/test-sets/:id         PUT /api/test-sets/:id      DELETE /api/test-sets/:id
+ *   POST   /api/test-sets/:id/run     { promptId, versionId }
+ *   GET    /api/test-sets/:id/results
+ *   DELETE /api/test-sets/:id/results
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ServiceError, type WorkbenchService } from './service.js';
@@ -129,6 +134,33 @@ export function createApp(service: WorkbenchService) {
     const versionIdB = typeof body?.versionIdB === 'string' ? body.versionIdB : '';
     if (!versionIdA || !versionIdB) throw new ServiceError(400, 'versionIdA and versionIdB are required');
     return service.getVersionDiff(versionIdA, versionIdB);
+  });
+
+  // ─── Test Sets ────────────────────────────────────────────────────────────
+
+  add('GET', '/api/test-sets', () => service.listTestSets());
+  add('POST', '/api/test-sets', (_p, body) => service.createTestSet(body ?? {}));
+  add('GET', '/api/test-sets/:id', ([id]) => {
+    const ts = service.getTestSet(id);
+    if (!ts) throw new ServiceError(404, `Test set ${id} not found`);
+    return ts;
+  });
+  add('PUT', '/api/test-sets/:id', ([id], body) => service.updateTestSet(id, body ?? {}));
+  add('DELETE', '/api/test-sets/:id', ([id]) => {
+    service.deleteTestSet(id);
+    return undefined;
+  });
+  add('POST', '/api/test-sets/:id/run', async ([id], body) => {
+    const promptId = typeof body?.promptId === 'string' ? body.promptId : '';
+    const versionId = typeof body?.versionId === 'string' ? body.versionId : '';
+    if (!promptId) throw new ServiceError(400, 'promptId is required');
+    if (!versionId) throw new ServiceError(400, 'versionId is required');
+    return service.runTestSet(id, promptId, versionId);
+  });
+  add('GET', '/api/test-sets/:id/results', ([id]) => service.getTestRunResults(id));
+  add('DELETE', '/api/test-sets/:id/results', ([id]) => {
+    service.deleteTestRunResults(id);
+    return undefined;
   });
 
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

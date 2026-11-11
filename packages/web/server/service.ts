@@ -15,6 +15,9 @@ import type {
   PromptUpdate,
   PromptVersion,
   PromptVersionCreate,
+  TestRunResult,
+  TestSet,
+  TestSetCreate,
 } from '@sentry-prompt/core';
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
@@ -432,7 +435,269 @@ export class WorkbenchService {
     };
   }
 
+  // ─── Test Sets ────────────────────────────────────────────────────────────
+
+  listTestSets(): TestSet[] {
+    const conn = this.db.connection;
+    const rows = conn
+      .prepare('SELECT * FROM test_sets ORDER BY created_at DESC')
+      .all() as any[];
+    return rows.map(row => this.mapTestSet(row));
+  }
+
+  getTestSet(id: string): TestSet | undefined {
+    const row = this.db.connection
+      .prepare('SELECT * FROM test_sets WHERE id = ?')
+      .get(id) as any;
+    return row ? this.mapTestSet(row) : undefined;
+  }
+
+  createTestSet(data: TestSetCreate): TestSet {
+    const name = data.name?.trim();
+    if (!name) throw new ServiceError(400, 'name is required');
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    const inputs = data.inputs || [];
+
+    const conn = this.db.connection;
+    conn.transaction(() => {
+      conn.prepare(
+        `INSERT INTO test_sets (id, name, description, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      ).run(id, name, data.description?.trim() ?? null, now, now);
+
+      const insertInput = conn.prepare(
+        `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
+      );
+      for (const input of inputs) {
+        insertInput.run(crypto.randomUUID(), id, input);
+      }
+    })();
+
+    const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+    return this.mapTestSet(row);
+  }
+
+  updateTestSet(id: string, data: { name?: string; description?: string; inputs?: string[] }): TestSet {
+    const existing = this.getTestSet(id);
+    if (!existing) throw new ServiceError(404, `Test set ${id} not found`);
+
+    const name = data.name !== undefined ? data.name.trim() || existing.name : existing.name;
+    const description = data.description !== undefined ? data.description.trim() || undefined : existing.description;
+    const now = new Date().toISOString();
+
+    const conn = this.db.connection;
+    conn.transaction(() => {
+      conn.prepare(
+        `UPDATE test_sets SET name = ?, description = ?, updated_at = ? WHERE id = ?`,
+      ).run(name, description ?? null, now, id);
+
+      // Replace all inputs
+      conn.prepare('DELETE FROM test_set_inputs WHERE test_set_id = ?').run(id);
+      const insertInput = conn.prepare(
+        `INSERT INTO test_set_inputs (id, test_set_id, input) VALUES (?, ?, ?)`,
+      );
+      const inputs = data.inputs ?? existing.inputs;
+      for (const input of inputs) {
+        insertInput.run(crypto.randomUUID(), id, input);
+      }
+    })();
+
+    const row = conn.prepare('SELECT * FROM test_sets WHERE id = ?').get(id) as any;
+    return this.mapTestSet(row);
+  }
+
+  deleteTestSet(id: string): void {
+    const conn = this.db.connection;
+    conn.transaction(() => {
+      conn.prepare('DELETE FROM test_set_inputs WHERE test_set_id = ?').run(id);
+      conn.prepare('DELETE FROM test_run_results WHERE test_set_id = ?').run(id);
+      conn.prepare('DELETE FROM test_sets WHERE id = ?').run(id);
+    })();
+  }
+
+  /**
+   * Get all inputs for a test set.
+   */
+  getTestSetInputs(testSetId: string): string[] {
+    const conn = this.db.connection;
+    const rows = conn
+      .prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ? ORDER BY rowid')
+      .all(testSetId) as { input: string }[];
+    return rows.map(r => r.input);
+  }
+
+  /**
+   * Run a test set against a prompt version.
+   * Executes each input sequentially and persists results.
+   */
+  async runTestSet(
+    testSetId: string,
+    promptId: string,
+    versionId: string,
+  ): Promise<TestRunResult[]> {
+    if (!this.client || !this.config) {
+      throw new ServiceError(400, 'API not configured. Set a base URL on the API Config page first.');
+    }
+
+    const testSet = this.getTestSet(testSetId);
+    if (!testSet) throw new ServiceError(404, `Test set ${testSetId} not found`);
+
+    const prompt = this.getPrompt(promptId);
+    if (!prompt) throw new ServiceError(404, `Prompt ${promptId} not found`);
+
+    const version = this.getVersion(versionId);
+    if (!version || version.promptId !== promptId) {
+      throw new ServiceError(404, versionId ? `Version ${versionId} not found` : 'Prompt has no versions');
+    }
+
+    const inputs = this.getTestSetInputs(testSetId);
+    if (inputs.length === 0) {
+      throw new ServiceError(400, 'Test set has no inputs');
+    }
+
+    const conn = this.db.connection;
+    const results: TestRunResult[] = [];
+
+    for (const input of inputs) {
+      const startTime = Date.now();
+      let output = '';
+      let error: string | undefined;
+      let tokenCount = 0;
+
+      try {
+        const result = await this.client.execute(
+          {
+            promptId,
+            versionId: version.id,
+            input: renderPrompt(version.content, input),
+            model: version.model || this.config.defaultModel || 'gpt-4',
+            temperature: version.temperature,
+            maxTokens: version.maxTokens,
+            systemPrompt: version.systemPrompt,
+          },
+          { saveRun: true },
+        );
+        output = result.output;
+        tokenCount = result.run.tokenCount;
+      } catch (err) {
+        error = err instanceof Error ? err.message : 'Unknown error';
+      }
+
+      const latencyMs = Date.now() - startTime;
+      const cost = this.comparison.estimateCost({
+        model: version.model || this.config.defaultModel || 'gpt-4',
+        promptTokens: tokenCount,
+        completionTokens: 0,
+      });
+
+      const resultId = crypto.randomUUID();
+      const createdAt = new Date().toISOString();
+
+      conn.prepare(
+        `INSERT INTO test_run_results (id, test_set_id, prompt_id, version_id, input, output, token_count, latency_ms, cost, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        resultId,
+        testSetId,
+        promptId,
+        versionId,
+        input,
+        output,
+        tokenCount,
+        latencyMs,
+        cost,
+        error ?? null,
+        createdAt,
+      );
+
+      results.push({
+        id: resultId,
+        testSetId,
+        promptId,
+        versionId,
+        input,
+        output,
+        tokenCount,
+        latencyMs,
+        cost,
+        error,
+        createdAt,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Get all test run results for a test set.
+   */
+  getTestRunResults(testSetId: string): TestRunResult[] {
+    const conn = this.db.connection;
+    const rows = conn
+      .prepare(
+        'SELECT * FROM test_run_results WHERE test_set_id = ? ORDER BY created_at ASC',
+      )
+      .all(testSetId) as any[];
+    return rows.map(mapTestRunResult);
+  }
+
+  /**
+   * Get test run results for a specific input within a test set.
+   */
+  getTestRunResult(testSetId: string, input: string): TestRunResult | undefined {
+    const conn = this.db.connection;
+    const row = conn
+      .prepare(
+        'SELECT * FROM test_run_results WHERE test_set_id = ? AND input = ? ORDER BY created_at DESC LIMIT 1',
+      )
+      .get(testSetId, input) as any;
+    return row ? mapTestRunResult(row) : undefined;
+  }
+
+  /**
+   * Delete all test run results for a test set.
+   */
+  deleteTestRunResults(testSetId: string): void {
+    this.db.connection.prepare('DELETE FROM test_run_results WHERE test_set_id = ?').run(testSetId);
+  }
+
+  // ─── Helpers ──────────────────────────────────────────────────────────────
+
+  private mapTestSet(row: any): TestSet {
+    const inputs = this.db.connection
+      .prepare('SELECT input FROM test_set_inputs WHERE test_set_id = ? ORDER BY rowid')
+      .all(row.id) as { input: string }[];
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description ?? undefined,
+      inputs: inputs.map(r => r.input),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+// ─── Row mappers ──────────────────────────────────────────────────────────────
+
+function mapTestRunResult(row: any): TestRunResult {
+  return {
+    id: row.id,
+    testSetId: row.test_set_id,
+    promptId: row.prompt_id,
+    versionId: row.version_id,
+    input: row.input,
+    output: row.output,
+    tokenCount: row.token_count,
+    latencyMs: row.latency_ms,
+    cost: row.cost ?? undefined,
+    error: row.error ?? undefined,
+    createdAt: row.created_at,
+  };
 }

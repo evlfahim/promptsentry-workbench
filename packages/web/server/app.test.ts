@@ -7,7 +7,7 @@ import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { Prompt, PromptRun, PromptVersion } from '@sentry-prompt/core';
+import type { Prompt, PromptRun, PromptVersion, TestSet, TestRunResult } from '@sentry-prompt/core';
 import { createApp } from './app.js';
 import { WorkbenchService, renderPrompt } from './service.js';
 
@@ -263,5 +263,164 @@ describe('web API: save and execute prompts', () => {
 
   it('returns 404 for unknown routes', async () => {
     assert.equal((await api('GET', '/api/nope')).status, 404);
+  });
+});
+
+describe('web API: test sets', () => {
+  let prompt: Prompt;
+  let v1: PromptVersion;
+  let testSetId: string;
+
+  before(async () => {
+    // Create a dedicated prompt for test set tests (the main suite deletes its prompt)
+    const { data } = await api<{ prompt: Prompt; version: PromptVersion }>('POST', '/api/prompts', {
+      name: 'Test Set Prompt',
+      content: 'Respond to: {{input}}',
+      model: 'test-model',
+      temperature: 0.2,
+      maxTokens: 64,
+    });
+    prompt = data.prompt;
+    v1 = data.version;
+  });
+
+  it('creates a test set with inputs', async () => {
+    const { status, data } = await api('POST', '/api/test-sets', {
+      name: 'Greeting Tests',
+      description: 'Test various greetings',
+      inputs: ['Hello', 'Hi there', 'Good morning'],
+    });
+    assert.equal(status, 201);
+    assert.equal(data.name, 'Greeting Tests');
+    assert.equal(data.description, 'Test various greetings');
+    assert.deepEqual(data.inputs, ['Hello', 'Hi there', 'Good morning']);
+    assert.ok(data.id);
+    assert.ok(data.createdAt);
+    assert.ok(data.updatedAt);
+    testSetId = data.id;
+  });
+
+  it('rejects a test set without a name', async () => {
+    const { status } = await api('POST', '/api/test-sets', { name: ' ', inputs: ['x'] });
+    assert.equal(status, 400);
+  });
+
+  it('creates a test set with no inputs', async () => {
+    const { status, data } = await api('POST', '/api/test-sets', { name: 'Empty Set' });
+    assert.equal(status, 201);
+    assert.deepEqual(data.inputs, []);
+  });
+
+  it('lists test sets', async () => {
+    const { status, data } = await api<TestSet[]>('GET', '/api/test-sets');
+    assert.equal(status, 200);
+    assert.ok(data.length >= 2);
+    const found = data.find(ts => ts.id === testSetId);
+    assert.ok(found);
+    assert.equal(found.name, 'Greeting Tests');
+    assert.deepEqual(found.inputs, ['Hello', 'Hi there', 'Good morning']);
+  });
+
+  it('gets a specific test set', async () => {
+    const { status, data } = await api<TestSet>('GET', `/api/test-sets/${testSetId}`);
+    assert.equal(status, 200);
+    assert.equal(data.name, 'Greeting Tests');
+    assert.deepEqual(data.inputs, ['Hello', 'Hi there', 'Good morning']);
+  });
+
+  it('returns 404 for unknown test set', async () => {
+    const { status } = await api('GET', '/api/test-sets/nonexistent-id');
+    assert.equal(status, 404);
+  });
+
+  it('updates a test set', async () => {
+    const { status, data } = await api<TestSet>('PUT', `/api/test-sets/${testSetId}`, {
+      name: 'Updated Greeting Tests',
+      description: 'Updated description',
+      inputs: ['Hello', 'Hi'],
+    });
+    assert.equal(status, 200);
+    assert.equal(data.name, 'Updated Greeting Tests');
+    assert.equal(data.description, 'Updated description');
+    assert.deepEqual(data.inputs, ['Hello', 'Hi']);
+  });
+
+  it('executes a test set against a prompt', async () => {
+    // First ensure API is configured
+    await api('PUT', '/api/config', { baseUrl: `${llmUrl}/v1`, defaultModel: 'test-model' });
+
+    const { status, data } = await api<TestRunResult[]>('POST', `/api/test-sets/${testSetId}/run`, {
+      promptId: prompt.id,
+      versionId: v1.id,
+    });
+    assert.equal(status, 201);
+    assert.ok(data.length > 0);
+    assert.ok(data.every(r => r.testSetId === testSetId));
+    assert.ok(data.every(r => r.promptId === prompt.id));
+    assert.ok(data.every(r => r.versionId === v1.id));
+    assert.ok(data.every(r => r.latencyMs >= 0));
+    assert.ok(data.every(r => r.tokenCount >= 0));
+    // Check that outputs are present (echo from fake LLM)
+    assert.ok(data.every(r => r.output.includes('echo:')));
+  });
+
+  it('gets test run results', async () => {
+    const { status, data } = await api<TestRunResult[]>('GET', `/api/test-sets/${testSetId}/results`);
+    assert.equal(status, 200);
+    assert.ok(data.length >= 2); // at least the 2 inputs from the updated test set
+    assert.ok(data.every(r => r.testSetId === testSetId));
+  });
+
+  it('deletes test run results', async () => {
+    await api('DELETE', `/api/test-sets/${testSetId}/results`);
+    const { status, data } = await api<TestRunResult[]>('GET', `/api/test-sets/${testSetId}/results`);
+    assert.equal(status, 200);
+    assert.equal(data.length, 0);
+  });
+
+  it('deletes a test set and its results', async () => {
+    // Create a test set with results
+    const { status: createStatus, data: ts } = await api<TestSet>('POST', '/api/test-sets', {
+      name: 'Delete Me',
+      inputs: ['test'],
+    });
+    assert.equal(createStatus, 201);
+    assert.ok(ts.id);
+
+    const { status: runStatus } = await api<TestRunResult[]>('POST', `/api/test-sets/${ts.id}/run`, {
+      promptId: prompt.id,
+      versionId: v1.id,
+    });
+    assert.equal(runStatus, 201);
+
+    // Verify it exists
+    const { status: getBefore } = await api<TestRunResult[]>('GET', `/api/test-sets/${ts.id}/results`);
+    assert.equal(getBefore, 200);
+
+    // Delete the test set
+    const { status } = await api('DELETE', `/api/test-sets/${ts.id}`);
+    assert.equal(status, 204);
+
+    // Verify it's gone
+    const { status: getAfter } = await api('GET', `/api/test-sets/${ts.id}`);
+    assert.equal(getAfter, 404);
+  });
+
+  it('rejects running a test set with a nonexistent prompt', async () => {
+    const { status } = await api('POST', `/api/test-sets/${testSetId}/run`, {
+      promptId: 'nonexistent-prompt-id',
+      versionId: v1.id,
+    });
+    assert.equal(status, 404);
+  });
+
+  it('rejects running a test set with missing promptId', async () => {
+    const { status } = await api('POST', `/api/test-sets/${testSetId}/run`, { versionId: v1.id });
+    assert.equal(status, 400);
+  });
+
+  it('rejects running a test set with missing versionId', async () => {
+    const { status } = await api('POST', `/api/test-sets/${testSetId}/run`, { promptId: prompt.id });
+    assert.equal(status, 400);
   });
 });

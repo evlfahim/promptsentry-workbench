@@ -11,6 +11,9 @@ import type {
   PromptRun,
   PromptUpdate,
   PromptVersion,
+  TestRunResult,
+  TestSet,
+  TestSetCreate,
 } from '@sentry-prompt/core';
 
 export interface SavePromptResult {
@@ -76,4 +79,19 @@ export const api = {
 
   compareVersions: (versionIdA: string, versionIdB: string) =>
     request<LexicalDiff>('POST', '/versions/compare', { versionIdA, versionIdB }),
+
+  // ─── Test Sets ────────────────────────────────────────────────────────────
+
+  listTestSets: () => request<TestSet[]>('GET', '/test-sets'),
+  createTestSet: (data: TestSetCreate) => request<TestSet>('POST', '/test-sets', data),
+  getTestSet: (id: string) => request<TestSet>('GET', `/test-sets/${encodeURIComponent(id)}`),
+  updateTestSet: (id: string, data: { name?: string; description?: string; inputs?: string[] }) =>
+    request<TestSet>('PUT', `/test-sets/${encodeURIComponent(id)}`, data),
+  deleteTestSet: (id: string) => request<void>('DELETE', `/test-sets/${encodeURIComponent(id)}`),
+  runTestSet: (testSetId: string, promptId: string, versionId: string) =>
+    request<TestRunResult[]>('POST', `/test-sets/${encodeURIComponent(testSetId)}/run`, { promptId, versionId }),
+  getTestRunResults: (testSetId: string) =>
+    request<TestRunResult[]>('GET', `/test-sets/${encodeURIComponent(testSetId)}/results`),
+  deleteTestRunResults: (testSetId: string) =>
+    request<void>('DELETE', `/test-sets/${encodeURIComponent(testSetId)}/results`),
 };
