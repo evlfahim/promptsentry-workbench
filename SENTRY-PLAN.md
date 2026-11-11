@@ -35,7 +35,7 @@ Core logic in `@sentry-prompt/core` handles DB, API, and diffing; VS Code extens
 - [x] 4. Create OpenAI-compatible client supporting streaming and non-streaming, and verify against a local Ollama instance
 - [x] 5. Implement comparison engine calculating token counts, latency, lexical diff, and semantic similarity, and validate output structure
 - [x] 6. Scaffold Web UI with Vite/React, list prompts, and verify navigation and state management
-- [ ] 7. Build prompt editor and run panel, connect to core API, and verify saving and executing prompts
+- [x] 7. Build prompt editor and run panel, connect to core API, and verify saving and executing prompts
 - [ ] 8. Implement side-by-side comparison view with diffs and metrics, and verify rendering of answer differences
 - [ ] 9. Add test set support for batch runs and verify A/B comparison workflow across multiple inputs
 - [ ] 10. Scaffold VS Code extension with `extension.ts`, manifest, and command palette integration

@@ -12,6 +12,7 @@ import type {
   PromptRun,
   PromptUpdate,
   PromptVersion,
+  PromptVersionCreate,
 } from '@sentry-prompt/core';
 
 // ─── Row mappers ──────────────────────────────────────────────────────────────
@@ -287,7 +288,8 @@ export class WorkbenchService {
    * (model, temperature, max tokens, system prompt) are committed here directly.
    */
   private commitVersion(prompt: Prompt, commitMessage?: string): PromptVersion | null {
-    const snapshot = {
+    const snapshot: PromptVersionCreate = {
+      promptId: prompt.id,
       content: prompt.content,
       model: prompt.model,
       temperature: prompt.temperature,
@@ -312,7 +314,6 @@ export class WorkbenchService {
 
     const version: PromptVersion = {
       id: crypto.randomUUID(),
-      promptId: prompt.id,
       ...snapshot,
       contentHash: this.versioning.computeHash(snapshot.content),
       versionNumber: (latest?.versionNumber ?? 0) + 1,
