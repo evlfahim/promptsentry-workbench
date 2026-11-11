@@ -22,4 +22,5 @@ export default {
   },
   testMatch: ['**/__tests__/**/*.test.ts'],
   roots: ['<rootDir>/src'],
+  setupFilesAfterEnv: ['<rootDir>/jest.setup.ts'],
 };

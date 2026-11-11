@@ -2,6 +2,13 @@
 
 > Local-first prompt workbench combining git-style versioning, execution against any OpenAI-compatible endpoint, and rich side-by-side diffs of answers, tokens, and latency with semantic analysis.
 
+## Why PromptSentry?
+
+- **CLI-only tools** like `promptctl` lack integrated execution, metrics, and UI
+- **Answer-diff tools** like PromptDiff lack persistent versioning, history, and local-first storage
+- **Manual workflows** miss automated metrics, semantic comparison, and reproducible test sets
+- No existing tool offers a unified workbench with versioning, execution, and analysis in a local stack
+
 ## Features
 
 - **Local SQLite database** for prompts, versions, runs, and metrics
@@ -25,7 +32,7 @@ TypeScript, Node.js, Vite, React, better-sqlite3, OpenAI SDK, `diff`, semantic-s
 ```
 packages/
 ├── core/          # @sentry-prompt/core — DB, versioning, API client, comparison
-├── web/           # @sentry-prompt/web — Vite/React web app
+├── web/           # @sentry-prompt/web — Vite/React web app + local API server
 └── vscode/        # @sentry-prompt/vscode — VS Code extension + webview
 ```
 
@@ -35,6 +42,7 @@ packages/
 
 - Node.js 22+
 - npm
+- (Optional) Ollama or another OpenAI-compatible endpoint for prompt execution
 
 ### Install
 
@@ -55,6 +63,14 @@ npm run dev --workspace=packages/web
 ```
 
 Open http://localhost:5173 in your browser.
+
+The web app connects to a local API server that wraps the core library. Start the server in a separate terminal:
+
+```bash
+npm run server --workspace=packages/web
+```
+
+The server listens on `http://127.0.0.1:3001` by default and proxies API requests from the Vite dev server.
 
 ### Run the VS Code extension
 
@@ -91,6 +107,7 @@ The extension can automatically sync `.prompt` files from a directory on your fi
 3. Enter the directory path
 
 **Via VS Code settings** (`settings.json`):
+
 ```json
 {
   "promptsentry.watchDirectory": "/path/to/your/prompts",
@@ -126,6 +143,70 @@ The extension can automatically sync `.prompt` files from a directory on your fi
 ### Tree View
 
 The extension adds a "PromptSentry" view to the VS Code sidebar showing all prompts and their version history.
+
+### Building the VS Code Extension
+
+The VS Code extension is a standard VS Code extension written in TypeScript. It uses esbuild to bundle the extension entry point and the webview app into single files.
+
+#### Extension architecture
+
+```
+packages/vscode/
+├── src/
+│   ├── extension.ts          # VS Code extension entry point (activate/deactivate)
+│   ├── webview-app.tsx       # React UI rendered inside the webview
+│   ├── webview-bridge.ts     # Message bridge between webview and extension host
+│   ├── webview-store.tsx     # React context for webview state
+│   ├── file-watcher.ts       # File system watcher for .prompt files
+│   ├── theme/theme.tsx       # Dark/light theme provider
+│   ├── hooks/useKeyboardShortcuts.ts
+│   ├── webview.html          # Webview HTML shell
+│   └── __tests__/            # Unit tests
+├── esbuild.cjs               # Bundling script (extension + webview)
+├── package.json              # Extension manifest (commands, views, settings)
+└── tsconfig.json
+```
+
+#### Key files
+
+- **`extension.ts`** — Registers all commands, creates the tree view provider, opens the webview panel, and wires up the file watcher.
+- **`webview-app.tsx`** — Full React application with routing, theme, keyboard shortcuts, and toast notifications.
+- **`webview-bridge.ts`** — Serializes messages between the webview (React) and the extension host (Node.js). The webview calls `postMessage` and the extension forwards to core library methods.
+- **`file-watcher.ts`** — Uses `fs.watch` to detect file changes in a directory and syncs them to the database.
+
+#### Build process
+
+```bash
+# Full build (TypeScript compile + esbuild bundling)
+npm run build --workspace=packages/vscode
+
+# TypeScript compile only
+npm run compile --workspace=packages/vscode
+
+# Bundle with esbuild (produces dist/extension.js and dist/webview-*.js)
+node packages/vscode/esbuild.cjs
+```
+
+#### Packaging for distribution
+
+```bash
+npm run package --workspace=packages/vscode
+```
+
+This runs `tsc --noEmit` for type-checking, then bundles with esbuild. The output is a single `dist/extension.js` file that VS Code can load.
+
+#### Publishing to the VS Code Marketplace
+
+```bash
+# Install VSCE (VS Code Extension Manager)
+npm install -g @vscode/vsce
+
+# Package
+vsce package -o promptsentry-workbench.vsix
+
+# Publish (requires VS Code Marketplace token)
+vsce publish
+```
 
 ## Web App
 
@@ -167,6 +248,46 @@ The UI adapts to different screen sizes:
 - **Print**: Hides navigation and buttons, ensures readable output
 - **Accessibility**: `:focus-visible` outlines, `prefers-reduced-motion` support, system theme detection
 
+### Web App Architecture
+
+```
+packages/web/
+├── src/
+│   ├── App.tsx                 # Router and layout shell
+│   ├── main.tsx                # React entry point
+│   ├── store.tsx               # React context for app state
+│   ├── theme.tsx               # Theme provider
+│   ├── global.css              # Global styles + responsive breakpoints
+│   ├── components/
+│   │   └── Navigation.tsx      # Top navigation bar
+│   ├── hooks/
+│   │   └── useKeyboardShortcuts.ts
+│   ├── services/
+│   │   └── coreService.ts      # HTTP client wrapping the API server
+│   └── views/
+│       ├── ApiConfig.tsx       # API endpoint configuration
+│       ├── ComparisonView.tsx  # Side-by-side diff view
+│       ├── Dashboard.tsx       # Overview dashboard
+│       ├── PromptDetail.tsx    # Prompt editor with version history
+│       ├── PromptsList.tsx     # Prompt list with search/filter
+│       ├── Runs.tsx            # Execution results viewer
+│       └── TestSets.tsx        # Test set management
+├── server/
+│   ├── index.ts                # HTTP server entry point
+│   ├── app.ts                  # Route definitions
+│   ├── service.ts              # WorkbenchService (wraps @sentry-prompt/core)
+│   └── app.test.ts             # Integration tests
+├── vite.config.ts
+└── package.json
+```
+
+The web app is split into two parts:
+
+1. **Client** (`src/`) — React UI served by Vite in development, bundled for production.
+2. **Server** (`server/`) — Node.js HTTP server using `better-sqlite3` (which cannot run in the browser). The Vite dev server proxies `/api` requests to this server.
+
+In production, the server serves both the API and the static React build.
+
 ## Core Library (`@sentry-prompt/core`)
 
 The core package can be used standalone or as a dependency:
@@ -200,6 +321,16 @@ const result = await client.execute({
 }, { saveRun: true });
 ```
 
+### Core modules
+
+| Module | Description |
+|---|---|
+| `db.ts` | SQLite database schema, connection management, WAL mode |
+| `versioning.ts` | Git-style versioning: create, diff, rollback, content-hash |
+| `api.ts` | OpenAI-compatible client: execute, streaming, model listing, health checks |
+| `comparison.ts` | Lexical diff, lexical similarity, semantic similarity, cost estimation, test set runner |
+| `types.ts` | Shared TypeScript interfaces for all packages |
+
 ## Running Tests
 
 ```bash
@@ -209,8 +340,11 @@ npm run test --workspace=packages/core
 # VS Code extension tests
 npm run test --workspace=packages/vscode
 
-# Web app tests
+# Web app tests (server integration tests)
 npm run test --workspace=packages/web
+
+# Run all tests across the monorepo
+npm run test
 ```
 
 ### Test Coverage
@@ -221,8 +355,8 @@ The core library has comprehensive unit and integration tests covering all criti
 |---|---|---|---|---|
 | `db.ts` | 100% | 100% | 100% | 100% |
 | `comparison.ts` | 97.5% | 88.5% | 100% | 99.3% |
-| `versioning.ts` | 92.9% | 77.3% | 100% | 92.4% |
-| `api.ts` | 30.5% | 9.9% | 62.5% | 29.6% |
+| `versioning.ts` | 92.7% | 77.3% | 100% | 92.2% |
+| `api.ts` | 29.1% | 9.9% | 62.5% | 28.2% |
 
 > **Note:** `api.ts` tests are integration tests against a live Ollama endpoint. All critical paths (execute, executeStream, listModels, healthCheck, configuration, error handling, DB save) are covered. The lower coverage reflects code paths that require a live API server (streaming chunks, async generators, model retrieval).
 
@@ -244,6 +378,9 @@ npm run build
 npm run build --workspace=packages/core
 npm run build --workspace=packages/web
 npm run build --workspace=packages/vscode
+
+# Clean build artifacts
+npm run clean
 ```
 
 ## Architecture
@@ -264,8 +401,8 @@ npm run build --workspace=packages/vscode
 │  │(SQLite)  │ │  Engine  │ │ Client  │ │ par-  │ │
 │  └──────────┘ └──────────┘ └──────────┘ └───────┘ │
 └─────────────────────────────────────────────────────┘
-                          ▲
-                          │ shared core
+                           ▲
+                           │ shared core
 ┌─────────────────────────────────────────────────────┐
 │                    Web App (Vite/React)              │
 │  ┌──────────────────────────────────────────────┐  │
