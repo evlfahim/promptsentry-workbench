@@ -4,9 +4,11 @@
  * talks to it over HTTP via the routes in ./app.ts.
  */
 import crypto from 'node:crypto';
-import { DB, OpenAIClient, VersioningEngine } from '@sentry-prompt/core';
+import { DB, OpenAIClient, VersioningEngine, ComparisonEngine } from '@sentry-prompt/core';
 import type {
   APIConfig,
+  ComparisonResult,
+  LexicalDiff,
   Prompt,
   PromptCreate,
   PromptRun,
@@ -96,12 +98,14 @@ export interface SavePromptResult {
 export class WorkbenchService {
   private db: DB;
   private versioning: VersioningEngine;
+  private comparison: ComparisonEngine;
   private client: OpenAIClient | null = null;
   private config: APIConfig | undefined;
 
   constructor(dbPath: string) {
     this.db = new DB({ path: dbPath });
     this.versioning = new VersioningEngine(this.db);
+    this.comparison = new ComparisonEngine(this.db);
     this.config = this.loadAPIConfig();
     if (this.config?.baseUrl) {
       this.client = new OpenAIClient(this.db, this.config);
@@ -364,6 +368,25 @@ export class WorkbenchService {
 
   deleteAllRuns(): void {
     this.db.connection.prepare('DELETE FROM prompt_runs').run();
+  }
+
+  /**
+   * Compare two runs side by side.
+   */
+  compareRuns(runIdA: string, runIdB: string): ComparisonResult {
+    return this.comparison.compareRuns(runIdA, runIdB);
+  }
+
+  /**
+   * Get a lexical diff between two versions.
+   */
+  getVersionDiff(versionIdA: string, versionIdB: string): LexicalDiff {
+    const versionA = this.getVersion(versionIdA);
+    const versionB = this.getVersion(versionIdB);
+    if (!versionA || !versionB) {
+      throw new ServiceError(404, 'One or both versions not found');
+    }
+    return this.comparison.computeLexicalDiff(versionA.content, versionB.content);
   }
 
   /**

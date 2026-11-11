@@ -4,6 +4,8 @@
  */
 import type {
   APIConfig,
+  ComparisonResult,
+  LexicalDiff,
   Prompt,
   PromptCreate,
   PromptRun,
@@ -68,4 +70,10 @@ export const api = {
     request<PromptRun[]>('GET', promptId ? `/runs?promptId=${encodeURIComponent(promptId)}` : '/runs'),
   deleteRun: (id: string) => request<void>('DELETE', `/runs/${encodeURIComponent(id)}`),
   deleteAllRuns: () => request<void>('DELETE', '/runs'),
+
+  compareRuns: (runIdA: string, runIdB: string) =>
+    request<ComparisonResult>('POST', '/runs/compare', { runIdA, runIdB }),
+
+  compareVersions: (versionIdA: string, versionIdB: string) =>
+    request<LexicalDiff>('POST', '/versions/compare', { versionIdA, versionIdB }),
 };

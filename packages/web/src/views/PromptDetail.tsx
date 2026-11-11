@@ -160,9 +160,16 @@ export function PromptDetail() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <Link to="/prompts" style={styles.backLink}>
-          ← Back to Prompts
-        </Link>
+        <div style={styles.headerLeft}>
+          <Link to="/prompts" style={styles.backLink}>
+            ← Back to Prompts
+          </Link>
+          {versions.length >= 2 && (
+            <Link to={`/prompts/${id}/compare`} style={styles.compareLink}>
+              ↔ Compare
+            </Link>
+          )}
+        </div>
         <span style={styles.metaItem}>
           Updated {new Date(prompt.updatedAt).toLocaleString()}
         </span>
@@ -443,10 +450,21 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     marginBottom: '24px',
   },
+  headerLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '16px',
+  },
   backLink: {
     color: '#4a9eff',
     textDecoration: 'none',
     fontSize: '14px',
+  },
+  compareLink: {
+    color: '#34d399',
+    textDecoration: 'none',
+    fontSize: '14px',
+    marginLeft: '16px',
   },
   form: {
     backgroundColor: '#1a1a2e',

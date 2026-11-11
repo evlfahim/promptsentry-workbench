@@ -10,6 +10,8 @@
  *   GET    /api/versions
  *   GET    /api/runs[?promptId=]      DELETE /api/runs
  *   GET    /api/runs/:id              DELETE /api/runs/:id
+ *   POST   /api/runs/compare          { runIdA, runIdB }
+ *   POST   /api/versions/compare      { versionIdA, versionIdB }
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ServiceError, type WorkbenchService } from './service.js';
@@ -113,6 +115,20 @@ export function createApp(service: WorkbenchService) {
   add('DELETE', '/api/runs/:id', ([id]) => {
     service.deleteRun(id);
     return undefined;
+  });
+
+  add('POST', '/api/runs/compare', (_p, body) => {
+    const runIdA = typeof body?.runIdA === 'string' ? body.runIdA : '';
+    const runIdB = typeof body?.runIdB === 'string' ? body.runIdB : '';
+    if (!runIdA || !runIdB) throw new ServiceError(400, 'runIdA and runIdB are required');
+    return service.compareRuns(runIdA, runIdB);
+  });
+
+  add('POST', '/api/versions/compare', (_p, body) => {
+    const versionIdA = typeof body?.versionIdA === 'string' ? body.versionIdA : '';
+    const versionIdB = typeof body?.versionIdB === 'string' ? body.versionIdB : '';
+    if (!versionIdA || !versionIdB) throw new ServiceError(400, 'versionIdA and versionIdB are required');
+    return service.getVersionDiff(versionIdA, versionIdB);
   });
 
   return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {

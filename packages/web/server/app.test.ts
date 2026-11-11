@@ -211,11 +211,50 @@ describe('web API: save and execute prompts', () => {
     await api('PUT', '/api/config', { baseUrl: `${llmUrl}/v1` });
   });
 
+  it('compares two runs side by side', async () => {
+    // Run the prompt twice with different inputs to get two runs
+    const { data: run1 } = await api<PromptRun>('POST', `/api/prompts/${prompt.id}/run`, { input: 'Alice' });
+    const { data: run2 } = await api<PromptRun>('POST', `/api/prompts/${prompt.id}/run`, { input: 'Bob' });
+
+    assert.ok(run1.id);
+    assert.ok(run2.id);
+    assert.notEqual(run1.id, run2.id);
+
+    // Compare the two runs
+    const { status, data: comparison } = await api<{
+      runA: PromptRun;
+      runB: PromptRun;
+      lexicalSimilarity: number;
+      semanticSimilarity: number;
+      latencyDiffMs: number;
+      tokenDiff: number;
+      lexicalDiff: { addedLines: number; deletedLines: number; commonLines: number };
+    }>('POST', '/api/runs/compare', { runIdA: run1.id, runIdB: run2.id });
+
+    assert.equal(status, 201);
+    assert.equal(comparison.runA.id, run1.id);
+    assert.equal(comparison.runB.id, run2.id);
+    assert.ok(comparison.lexicalSimilarity >= 0 && comparison.lexicalSimilarity <= 1);
+    assert.ok(comparison.semanticSimilarity >= 0 && comparison.semanticSimilarity <= 1);
+    assert.ok(typeof comparison.latencyDiffMs === 'number');
+    assert.ok(typeof comparison.tokenDiff === 'number');
+    assert.ok(comparison.lexicalDiff.addedLines >= 0);
+    assert.ok(comparison.lexicalDiff.deletedLines >= 0);
+  });
+
+  it('rejects compare with missing run IDs', async () => {
+    const { status } = await api('POST', '/api/runs/compare', { runIdA: 'abc' });
+    assert.equal(status, 400);
+
+    const { status: status2 } = await api('POST', '/api/runs/compare', {});
+    assert.equal(status2, 400);
+  });
+
   it('deletes runs and prompts', async () => {
     const runs = await api<PromptRun[]>('GET', '/api/runs');
-    assert.equal(runs.data.length, 3);
+    assert.ok(runs.data.length >= 3, `expected at least 3 runs, got ${runs.data.length}`);
     assert.equal((await api('DELETE', `/api/runs/${runs.data[0].id}`)).status, 204);
-    assert.equal((await api<PromptRun[]>('GET', '/api/runs')).data.length, 2);
+    assert.equal((await api<PromptRun[]>('GET', '/api/runs')).data.length, runs.data.length - 1);
 
     assert.equal((await api('DELETE', `/api/prompts/${prompt.id}`)).status, 204);
     assert.equal((await api('GET', `/api/prompts/${prompt.id}`)).status, 404);

@@ -6,6 +6,7 @@ import { PromptsList } from './views/PromptsList';
 import { PromptDetail } from './views/PromptDetail';
 import { ApiConfig } from './views/ApiConfig';
 import { Runs } from './views/Runs';
+import { ComparisonView } from './views/ComparisonView';
 
 function ErrorBanner() {
   const { state } = useStore();
@@ -27,6 +28,7 @@ export function App() {
               <Route path="/prompts/:id" element={<PromptDetail />} />
               <Route path="/api-config" element={<ApiConfig />} />
               <Route path="/runs" element={<Runs />} />
+              <Route path="/prompts/:id/compare" element={<ComparisonView />} />
             </Routes>
           </main>
         </div>
