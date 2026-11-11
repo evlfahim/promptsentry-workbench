@@ -136,6 +136,36 @@ The web app provides a full-featured workbench UI with:
 - **Runs** — view execution results with token counts and latency
 - **Test Sets** — create test sets with multiple inputs, run against prompts, compare results
 - **API Config** — configure the OpenAI-compatible endpoint
+- **Dark / Light mode** — toggle with the ☀️/🌙 button or `Ctrl+T`
+- **Responsive layout** — adapts to mobile, tablet, and desktop viewports
+- **Keyboard shortcuts** — see below
+
+### Keyboard Shortcuts
+
+| Shortcut | Action |
+|---|---|
+| `Ctrl+N` / `⌘N` | Create a new prompt |
+| `Ctrl+K` / `⌘K` | Focus the search/filter input |
+| `Ctrl+T` / `⌘T` | Toggle dark/light theme |
+| `Ctrl+Shift+R` / `⌘⇧R` | Refresh all data |
+| `Ctrl+H` / `⌘H` | Show keyboard shortcuts help |
+| `Esc` | Close modals and overlays |
+
+Shortcuts are platform-aware: Mac shows `⌘`, `⌃`, `⇧`, `⌥`; Windows/Linux shows `Ctrl`, `Shift`, `Alt`.
+
+### Toast Notifications
+
+The UI shows brief toast notifications for actions like prompt creation, deletion, save confirmations, and run results. Toasts auto-dismiss after 3 seconds and are color-coded (green for success, red for errors, blue for info).
+
+### Responsive Design
+
+The UI adapts to different screen sizes:
+
+- **Desktop (> 768px)**: Full navigation bar, side-by-side diffs, multi-column grids
+- **Tablet (≤ 768px)**: Hamburger menu, stacked diff views, single-column forms
+- **Mobile (≤ 480px)**: Compact cards, full-width buttons, scrollable tables
+- **Print**: Hides navigation and buttons, ensures readable output
+- **Accessibility**: `:focus-visible` outlines, `prefers-reduced-motion` support, system theme detection
 
 ## Core Library (`@sentry-prompt/core`)
 

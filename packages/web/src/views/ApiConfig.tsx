@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useStore, service } from '../store';
+import { useTheme } from '../theme';
 import type { APIConfig } from '@sentry-prompt/core';
 
 export function ApiConfig() {
   const { state, dispatch } = useStore();
+  const { colors } = useTheme();
   const [baseUrl, setBaseUrl] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState('');
@@ -40,93 +42,130 @@ export function ApiConfig() {
   }
 
   function handleReset() {
-    // Reverts the form to the saved configuration.
     setBaseUrl(state.apiConfig?.baseUrl ?? '');
     setApiKey(state.apiConfig?.apiKey ?? '');
     setDefaultModel(state.apiConfig?.defaultModel ?? '');
     setError(null);
   }
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    backgroundColor: colors.bgInput,
+    border: `1px solid ${colors.border}`,
+    borderRadius: '4px',
+    padding: '10px 12px',
+    color: colors.text,
+    fontSize: '14px',
+    boxSizing: 'border-box',
+    transition: 'border-color 0.15s',
+  };
+
   return (
-    <div style={styles.container}>
-      <h1 style={styles.title}>API Configuration</h1>
-      <p style={styles.subtitle}>
+    <div style={{ maxWidth: '700px', margin: '0 auto', padding: '32px 24px' }}>
+      <h1 style={{ fontSize: '28px', fontWeight: 700, color: colors.text, marginBottom: '8px' }}>API Configuration</h1>
+      <p style={{ color: colors.textSecondary, marginBottom: '32px' }}>
         Configure your OpenAI-compatible endpoint (Ollama, vLLM, etc.)
       </p>
 
-      <form onSubmit={handleSave} style={styles.form}>
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Base URL *</label>
+      <form onSubmit={handleSave} style={{
+        backgroundColor: colors.bgCard,
+        borderRadius: '8px',
+        padding: '24px',
+        border: `1px solid ${colors.bgCardBorder}`,
+      }}>
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', color: colors.textSecondary, fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>Base URL *</label>
           <input
             type="text"
             value={baseUrl}
             onChange={e => setBaseUrl(e.target.value)}
             placeholder="http://localhost:11434/v1"
-            style={styles.input}
+            style={inputStyle}
             required
           />
-          <span style={styles.hint}>
+          <span style={{ display: 'block', color: colors.textTertiary, fontSize: '12px', marginTop: '4px' }}>
             Example: http://localhost:11434/v1 (Ollama), http://localhost:8000/v1 (vLLM)
           </span>
         </div>
 
-        <div style={styles.formGroup}>
-          <label style={styles.label}>API Key (optional)</label>
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', color: colors.textSecondary, fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>API Key (optional)</label>
           <input
             type="password"
             value={apiKey}
             onChange={e => setApiKey(e.target.value)}
             placeholder="sk-..."
-            style={styles.input}
+            style={inputStyle}
           />
-          <span style={styles.hint}>
+          <span style={{ display: 'block', color: colors.textTertiary, fontSize: '12px', marginTop: '4px' }}>
             Required for most OpenAI-compatible servers. Leave empty for local servers like Ollama.
           </span>
         </div>
 
-        <div style={styles.formGroup}>
-          <label style={styles.label}>Default Model</label>
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'block', color: colors.textSecondary, fontSize: '13px', fontWeight: 600, marginBottom: '6px' }}>Default Model</label>
           <input
             type="text"
             value={defaultModel}
             onChange={e => setDefaultModel(e.target.value)}
             placeholder="gpt-4, llama3, etc."
-            style={styles.input}
+            style={inputStyle}
           />
-          <span style={styles.hint}>
+          <span style={{ display: 'block', color: colors.textTertiary, fontSize: '12px', marginTop: '4px' }}>
             This model will be used as the default for new prompts.
           </span>
         </div>
 
-        {error && <p style={styles.errorText}>Error: {error}</p>}
+        {error && <p style={{ color: colors.textError, fontSize: '14px', margin: '0 0 8px' }}>Error: {error}</p>}
 
-        <div style={styles.formActions}>
-          <button type="submit" style={styles.saveButton}>
+        <div className="action-buttons-responsive" style={{ display: 'flex', gap: '12px', marginTop: '24px', flexWrap: 'wrap' }}>
+          <button type="submit" style={{
+            backgroundColor: colors.accent,
+            color: '#ffffff',
+            border: 'none',
+            padding: '10px 20px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 600,
+          }}>
             {saved ? '✓ Saved!' : 'Save Configuration'}
           </button>
-          <button type="button" style={styles.resetButton} onClick={handleReset}>
+          <button type="button" style={{
+            backgroundColor: colors.bgTertiary,
+            color: colors.text,
+            border: 'none',
+            padding: '10px 20px',
+            borderRadius: '6px',
+            cursor: 'pointer',
+          }} onClick={handleReset}>
             Reset
           </button>
         </div>
       </form>
 
       {state.apiConfig && (
-        <div style={styles.currentConfig}>
-          <h3 style={styles.configTitle}>Current Configuration</h3>
-          <div style={styles.configGrid}>
-            <div style={styles.configItem}>
-              <span style={styles.configLabel}>Base URL</span>
-              <span style={styles.configValue}>{state.apiConfig.baseUrl}</span>
+        <div style={{
+          marginTop: '32px',
+          backgroundColor: colors.bgCard,
+          borderRadius: '8px',
+          padding: '24px',
+          border: `1px solid ${colors.bgCardBorder}`,
+        }}>
+          <h3 style={{ color: colors.text, fontSize: '16px', marginBottom: '16px' }}>Current Configuration</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ color: colors.textSecondary, fontSize: '14px' }}>Base URL</span>
+              <span style={{ color: colors.text, fontSize: '14px', fontFamily: 'monospace' }}>{state.apiConfig.baseUrl}</span>
             </div>
-            <div style={styles.configItem}>
-              <span style={styles.configLabel}>API Key</span>
-              <span style={styles.configValue}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ color: colors.textSecondary, fontSize: '14px' }}>API Key</span>
+              <span style={{ color: colors.text, fontSize: '14px', fontFamily: 'monospace' }}>
                 {state.apiConfig.apiKey ? '••••••••' : '(not set)'}
               </span>
             </div>
-            <div style={styles.configItem}>
-              <span style={styles.configLabel}>Default Model</span>
-              <span style={styles.configValue}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <span style={{ color: colors.textSecondary, fontSize: '14px' }}>Default Model</span>
+              <span style={{ color: colors.text, fontSize: '14px', fontFamily: 'monospace' }}>
                 {state.apiConfig.defaultModel || '(not set)'}
               </span>
             </div>
@@ -136,111 +175,3 @@ export function ApiConfig() {
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    maxWidth: '700px',
-    margin: '0 auto',
-    padding: '32px 24px',
-  },
-  title: {
-    fontSize: '28px',
-    fontWeight: 700,
-    color: '#e0e0e0',
-    marginBottom: '8px',
-  },
-  subtitle: {
-    color: '#a0a0b0',
-    marginBottom: '32px',
-  },
-  form: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '24px',
-    border: '1px solid #2d2d44',
-  },
-  formGroup: {
-    marginBottom: '20px',
-  },
-  label: {
-    display: 'block',
-    color: '#a0a0b0',
-    fontSize: '13px',
-    fontWeight: 600,
-    marginBottom: '6px',
-  },
-  input: {
-    width: '100%',
-    backgroundColor: '#0d0d1a',
-    border: '1px solid #2d2d44',
-    borderRadius: '4px',
-    padding: '10px 12px',
-    color: '#e0e0e0',
-    fontSize: '14px',
-    boxSizing: 'border-box',
-  },
-  hint: {
-    display: 'block',
-    color: '#606070',
-    fontSize: '12px',
-    marginTop: '4px',
-  },
-  formActions: {
-    display: 'flex',
-    gap: '12px',
-    marginTop: '24px',
-  },
-  saveButton: {
-    backgroundColor: '#4a9eff',
-    color: '#ffffff',
-    border: 'none',
-    padding: '10px 20px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontWeight: 600,
-  },
-  errorText: {
-    color: '#ef4444',
-    fontSize: '14px',
-    margin: '0 0 8px',
-  },
-  resetButton: {
-    backgroundColor: '#2d2d44',
-    color: '#e0e0e0',
-    border: 'none',
-    padding: '10px 20px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-  },
-  currentConfig: {
-    marginTop: '32px',
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '24px',
-    border: '1px solid #2d2d44',
-  },
-  configTitle: {
-    color: '#e0e0e0',
-    fontSize: '16px',
-    marginBottom: '16px',
-  },
-  configGrid: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '12px',
-  },
-  configItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  configLabel: {
-    color: '#a0a0b0',
-    fontSize: '14px',
-  },
-  configValue: {
-    color: '#e0e0e0',
-    fontSize: '14px',
-    fontFamily: 'monospace',
-  },
-};

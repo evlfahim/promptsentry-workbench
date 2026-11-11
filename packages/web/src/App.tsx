@@ -8,21 +8,70 @@ import { ApiConfig } from './views/ApiConfig';
 import { Runs } from './views/Runs';
 import { ComparisonView } from './views/ComparisonView';
 import { TestSets } from './views/TestSets';
+import { useTheme } from './theme';
+import { useKeyboardShortcuts, usePlatformShortcuts } from './hooks/useKeyboardShortcuts';
 
 function ErrorBanner() {
   const { state } = useStore();
+  const { colors } = useTheme();
   if (!state.error) return null;
-  return <div style={styles.errorBanner}>{state.error}</div>;
+  return (
+    <div style={{
+      backgroundColor: colors.bgError,
+      borderBottom: `1px solid ${colors.textError}`,
+      color: colors.textError,
+      padding: '10px 24px',
+      fontSize: '14px',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    }}>
+      {state.error}
+      <button
+        onClick={() => {
+          window.dispatchEvent(new CustomEvent('promptsentry:clear-error'));
+        }}
+        style={{
+          background: 'none',
+          border: 'none',
+          color: colors.textError,
+          fontSize: '18px',
+          cursor: 'pointer',
+          padding: '0 4px',
+        }}
+      >×</button>
+    </div>
+  );
 }
 
 export function App() {
+  const { colors, toggle } = useTheme();
+  const { meta, ctrl, shift } = usePlatformShortcuts();
+
+  // Register keyboard shortcuts
+  useKeyboardShortcuts([
+    { combo: `${meta}+n`, action: () => window.dispatchEvent(new CustomEvent('promptsentry:new-prompt')) },
+    { combo: `${meta}+k`, action: () => window.dispatchEvent(new CustomEvent('promptsentry:focus-search')) },
+    { combo: `${meta}+shift+r`, action: () => window.location.reload() },
+    { combo: 'escape', action: () => window.dispatchEvent(new CustomEvent('promptsentry:close-modal')) },
+    { combo: `${meta}+t`, action: toggle },
+    { combo: `${meta}+h`, action: () => window.dispatchEvent(new CustomEvent('promptsentry:show-help')) },
+  ]);
+
   return (
     <StoreProvider>
       <BrowserRouter>
-        <div style={styles.app}>
+        <div style={{
+          minHeight: '100vh',
+          backgroundColor: colors.bg,
+          color: colors.text,
+          transition: 'background-color 0.2s, color 0.2s',
+        }}>
           <Navigation />
           <ErrorBanner />
-          <main style={styles.main}>
+          <main style={{
+            minHeight: 'calc(100vh - 57px)',
+          }}>
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/prompts" element={<PromptsList />} />
@@ -38,21 +87,3 @@ export function App() {
     </StoreProvider>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  app: {
-    minHeight: '100vh',
-    backgroundColor: '#0d0d1a',
-    color: '#e0e0e0',
-  },
-  main: {
-    minHeight: 'calc(100vh - 57px)',
-  },
-  errorBanner: {
-    backgroundColor: '#2d1a1a',
-    borderBottom: '1px solid #ef4444',
-    color: '#ef4444',
-    padding: '10px 24px',
-    fontSize: '14px',
-  },
-};

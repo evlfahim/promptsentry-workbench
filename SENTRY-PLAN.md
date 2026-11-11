@@ -42,6 +42,6 @@ Core logic in `@sentry-prompt/core` handles DB, API, and diffing; VS Code extens
 - [x] 11. Integrate `@sentry-prompt/core` into extension, expose DB and API methods, and verify extension imports work
 - [x] 12. Embed Webview in extension, bridge messages between core and UI, and verify UI renders in VS Code
 - [x] 13. Add file watcher to sync external prompt files with local versions, and verify auto-detection of changes
-- [ ] 14. Polish Web UI and Webview with dark mode, keyboard shortcuts, and responsive layout, and verify cross-platform consistency
+- [x] 14. Polish Web UI and Webview with dark mode, keyboard shortcuts, and responsive layout, and verify cross-platform consistency
 - [ ] 15. Write unit tests for core logic covering versioning, API, and comparison, and verify 100% coverage on critical paths
 - [ ] 16. Write README with setup instructions, usage examples, and guide to building the VS Code plugin, and verify all commands work

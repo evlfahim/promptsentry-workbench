@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom';
 import { useStore } from '../store';
+import { useTheme } from '../theme';
 
 export function Dashboard() {
   const { state } = useStore();
+  const { colors } = useTheme();
 
   const stats = [
     { label: 'Prompts', value: state.prompts.length, color: '#4a9eff' },
@@ -12,32 +14,93 @@ export function Dashboard() {
   ];
 
   return (
-    <div style={styles.container}>
-      <h1 style={styles.title}>Dashboard</h1>
-      <p style={styles.subtitle}>Overview of your prompt workbench</p>
+    <div style={{
+      maxWidth: '900px',
+      margin: '0 auto',
+      padding: '32px 24px',
+    }}>
+      <h1 style={{
+        fontSize: '28px',
+        fontWeight: 700,
+        color: colors.text,
+        marginBottom: '8px',
+      }}>Dashboard</h1>
+      <p style={{
+        fontSize: '16px',
+        color: colors.textSecondary,
+        marginBottom: '32px',
+      }}>Overview of your prompt workbench</p>
 
-      <div style={styles.statsGrid}>
+      <div className="stats-grid-responsive" style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+        gap: '16px',
+        marginBottom: '32px',
+      }}>
         {stats.map(stat => (
-          <div key={stat.label} style={{ ...styles.statCard, borderTop: `3px solid ${stat.color}` }}>
-            <div style={styles.statValue}>{stat.value}</div>
-            <div style={styles.statLabel}>{stat.label}</div>
+          <div key={stat.label} className="stat-card-responsive" style={{
+            backgroundColor: colors.bgCard,
+            borderRadius: '8px',
+            padding: '20px',
+            textAlign: 'center',
+            borderTop: `3px solid ${stat.color}`,
+            border: `1px solid ${colors.bgCardBorder}`,
+            transition: 'background-color 0.2s, border-color 0.2s',
+          }}>
+            <div style={{ fontSize: '32px', fontWeight: 700, color: colors.text }}>{stat.value}</div>
+            <div style={{ fontSize: '14px', color: colors.textSecondary, marginTop: '4px' }}>{stat.label}</div>
           </div>
         ))}
       </div>
 
-      <div style={styles.actions}>
-        <Link to="/prompts" style={styles.primaryButton}>
+      <div className="action-buttons-responsive" style={{
+        display: 'flex',
+        gap: '12px',
+        marginBottom: '32px',
+        flexWrap: 'wrap',
+      }}>
+        <Link to="/prompts" style={{
+          backgroundColor: colors.accent,
+          color: '#ffffff',
+          padding: '10px 20px',
+          borderRadius: '6px',
+          textDecoration: 'none',
+          fontWeight: 600,
+          fontSize: '14px',
+          transition: 'background-color 0.15s',
+        }}>
           Manage Prompts
         </Link>
-        <Link to="/api-config" style={styles.secondaryButton}>
+        <Link to="/api-config" style={{
+          backgroundColor: colors.bgTertiary,
+          color: colors.text,
+          padding: '10px 20px',
+          borderRadius: '6px',
+          textDecoration: 'none',
+          fontWeight: 600,
+          fontSize: '14px',
+          transition: 'background-color 0.15s',
+        }}>
           Configure API
         </Link>
       </div>
 
       {state.prompts.length === 0 && (
-        <div style={styles.emptyState}>
-          <p style={styles.emptyText}>No prompts yet. Create your first prompt to get started.</p>
-          <Link to="/prompts" style={styles.link}>
+        <div style={{
+          backgroundColor: colors.bgCard,
+          borderRadius: '8px',
+          padding: '32px',
+          textAlign: 'center',
+          border: `1px solid ${colors.bgCardBorder}`,
+        }}>
+          <p style={{ color: colors.textSecondary, marginBottom: '16px' }}>
+            No prompts yet. Create your first prompt to get started.
+          </p>
+          <Link to="/prompts" style={{
+            color: colors.textLink,
+            textDecoration: 'none',
+            fontWeight: 600,
+          }}>
             Go to Prompts →
           </Link>
         </div>
@@ -45,82 +108,3 @@ export function Dashboard() {
     </div>
   );
 }
-
-const styles: Record<string, React.CSSProperties> = {
-  container: {
-    maxWidth: '900px',
-    margin: '0 auto',
-    padding: '32px 24px',
-  },
-  title: {
-    fontSize: '28px',
-    fontWeight: 700,
-    color: '#e0e0e0',
-    marginBottom: '8px',
-  },
-  subtitle: {
-    fontSize: '16px',
-    color: '#a0a0b0',
-    marginBottom: '32px',
-  },
-  statsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-    gap: '16px',
-    marginBottom: '32px',
-  },
-  statCard: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '20px',
-    textAlign: 'center',
-  },
-  statValue: {
-    fontSize: '32px',
-    fontWeight: 700,
-    color: '#ffffff',
-  },
-  statLabel: {
-    fontSize: '14px',
-    color: '#a0a0b0',
-    marginTop: '4px',
-  },
-  actions: {
-    display: 'flex',
-    gap: '12px',
-    marginBottom: '32px',
-  },
-  primaryButton: {
-    backgroundColor: '#4a9eff',
-    color: '#ffffff',
-    padding: '10px 20px',
-    borderRadius: '6px',
-    textDecoration: 'none',
-    fontWeight: 600,
-    fontSize: '14px',
-  },
-  secondaryButton: {
-    backgroundColor: '#2d2d44',
-    color: '#e0e0e0',
-    padding: '10px 20px',
-    borderRadius: '6px',
-    textDecoration: 'none',
-    fontWeight: 600,
-    fontSize: '14px',
-  },
-  emptyState: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '32px',
-    textAlign: 'center',
-  },
-  emptyText: {
-    color: '#a0a0b0',
-    marginBottom: '16px',
-  },
-  link: {
-    color: '#4a9eff',
-    textDecoration: 'none',
-    fontWeight: 600,
-  },
-};
