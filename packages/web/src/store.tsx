@@ -1,13 +1,11 @@
 import React, { type ReactNode, createContext, useReducer, useContext, useEffect } from 'react';
 import type { Prompt, PromptVersion, PromptRun, APIConfig, TestSet } from '@sentry-prompt/core';
-import { CoreService } from './services/coreService';
+import { api } from './services/coreService';
 
 // ─── Service instance ────────────────────────────────────────────────────────
 
-// In a real app, this would be configured via environment variables or a config file.
-// For now, we use an in-memory SQLite database.
-const DB_PATH = ':memory:';
-export const service = new CoreService(DB_PATH);
+// All persistence goes through the local API server (see server/index.ts).
+export const service = api;
 
 // ─── Store State ──────────────────────────────────────────────────────────────
 
@@ -33,8 +31,9 @@ export type StoreAction =
   | { type: 'ADD_VERSION'; payload: PromptVersion }
   | { type: 'SET_RUNS'; payload: PromptRun[] }
   | { type: 'ADD_RUN'; payload: PromptRun }
+  | { type: 'DELETE_RUN'; payload: string }
   | { type: 'SET_TEST_SETS'; payload: TestSet[] }
-  | { type: 'SET_API_CONFIG'; payload: APIConfig }
+  | { type: 'SET_API_CONFIG'; payload: APIConfig | undefined }
   | { type: 'SET_SELECTED_PROMPT'; payload: string | null }
   | { type: 'SET_SELECTED_VERSION'; payload: string | null }
   | { type: 'SET_SELECTED_RUN'; payload: string | null }
@@ -62,7 +61,7 @@ function storeReducer(state: StoreState, action: StoreAction): StoreState {
     case 'SET_PROMPTS':
       return { ...state, prompts: action.payload };
     case 'ADD_PROMPT':
-      return { ...state, prompts: [...state.prompts, action.payload] };
+      return { ...state, prompts: [action.payload, ...state.prompts] };
     case 'UPDATE_PROMPT':
       return {
         ...state,
@@ -72,15 +71,25 @@ function storeReducer(state: StoreState, action: StoreAction): StoreState {
       return {
         ...state,
         prompts: state.prompts.filter(p => p.id !== action.payload),
+        versions: state.versions.filter(v => v.promptId !== action.payload),
+        runs: state.runs.filter(r => r.promptId !== action.payload),
       };
     case 'SET_VERSIONS':
       return { ...state, versions: action.payload };
     case 'ADD_VERSION':
-      return { ...state, versions: [...state.versions, action.payload] };
+      return {
+        ...state,
+        versions: [action.payload, ...state.versions.filter(v => v.id !== action.payload.id)],
+      };
     case 'SET_RUNS':
       return { ...state, runs: action.payload };
     case 'ADD_RUN':
-      return { ...state, runs: [...state.runs, action.payload] };
+      return {
+        ...state,
+        runs: [action.payload, ...state.runs.filter(r => r.id !== action.payload.id)],
+      };
+    case 'DELETE_RUN':
+      return { ...state, runs: state.runs.filter(r => r.id !== action.payload) };
     case 'SET_TEST_SETS':
       return { ...state, testSets: action.payload };
     case 'SET_API_CONFIG':
@@ -114,22 +123,24 @@ const StoreContext = createContext<StoreContextType | null>(null);
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(storeReducer, initialState);
 
-  // Load data from core on mount
+  // Load data from the API server on mount
   useEffect(() => {
     let cancelled = false;
     async function loadData() {
       dispatch({ type: 'SET_LOADING', payload: true });
       try {
-        const [prompts, apiConfig] = await Promise.all([
+        const [prompts, versions, runs, apiConfig] = await Promise.all([
           service.listPrompts(),
+          service.listVersions(),
+          service.listRuns(),
           service.getAPIConfig(),
         ]);
         if (!cancelled) {
           dispatch({ type: 'SET_PROMPTS', payload: prompts });
-          if (apiConfig) {
-            dispatch({ type: 'SET_API_CONFIG', payload: apiConfig });
-            service.setAPIConfig(apiConfig);
-          }
+          dispatch({ type: 'SET_VERSIONS', payload: versions });
+          dispatch({ type: 'SET_RUNS', payload: runs });
+          dispatch({ type: 'SET_API_CONFIG', payload: apiConfig ?? undefined });
+          dispatch({ type: 'SET_ERROR', payload: null });
         }
       } catch (err) {
         if (!cancelled) {

@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useStore } from '../store';
-import type { Prompt } from '@sentry-prompt/core';
+import { useStore, service } from '../store';
 
 export function PromptsList() {
   const { state, dispatch } = useStore();
@@ -13,31 +12,34 @@ export function PromptsList() {
   const [newMaxTokens, setNewMaxTokens] = useState(1024);
   const [newSystemPrompt, setNewSystemPrompt] = useState('');
   const [filter, setFilter] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   const filteredPrompts = state.prompts.filter(p =>
     p.name.toLowerCase().includes(filter.toLowerCase()) ||
     p.content.toLowerCase().includes(filter.toLowerCase())
   );
 
-  function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
 
-    const now = new Date().toISOString();
-    const id = crypto.randomUUID();
-    const prompt: Prompt = {
-      id,
-      name: newName.trim(),
-      content: newContent.trim(),
-      model: newModel,
-      temperature: newTemperature,
-      maxTokens: newMaxTokens,
-      systemPrompt: newSystemPrompt.trim() || undefined,
-      createdAt: now,
-      updatedAt: now,
-    };
+    setError(null);
+    try {
+      const { prompt, version } = await service.createPrompt({
+        name: newName.trim(),
+        content: newContent.trim(),
+        model: newModel.trim() || state.apiConfig?.defaultModel || 'gpt-4',
+        temperature: newTemperature,
+        maxTokens: newMaxTokens,
+        systemPrompt: newSystemPrompt.trim() || undefined,
+      });
+      dispatch({ type: 'ADD_PROMPT', payload: prompt });
+      if (version) dispatch({ type: 'ADD_VERSION', payload: version });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create prompt');
+      return;
+    }
 
-    dispatch({ type: 'ADD_PROMPT', payload: prompt });
     setShowCreate(false);
     setNewName('');
     setNewContent('');
@@ -47,9 +49,14 @@ export function PromptsList() {
     setNewSystemPrompt('');
   }
 
-  function handleDelete(id: string) {
-    if (confirm('Delete this prompt? This cannot be undone.')) {
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this prompt? This cannot be undone.')) return;
+    setError(null);
+    try {
+      await service.deletePrompt(id);
       dispatch({ type: 'DELETE_PROMPT', payload: id });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete prompt');
     }
   }
 
@@ -61,6 +68,8 @@ export function PromptsList() {
           {showCreate ? 'Cancel' : '+ New Prompt'}
         </button>
       </div>
+
+      {error && <div style={styles.errorBox}>Error: {error}</div>}
 
       {showCreate && (
         <form onSubmit={handleCreate} style={styles.createForm}>
@@ -366,5 +375,14 @@ const styles: Record<string, React.CSSProperties> = {
   metaItem: {
     color: '#606070',
     fontSize: '12px',
+  },
+  errorBox: {
+    backgroundColor: '#2d1a1a',
+    border: '1px solid #ef4444',
+    borderRadius: '6px',
+    padding: '12px 16px',
+    marginBottom: '16px',
+    color: '#ef4444',
+    fontSize: '14px',
   },
 };

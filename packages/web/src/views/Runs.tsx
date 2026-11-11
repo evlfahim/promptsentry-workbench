@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useStore } from '../store';
-import type { PromptRun } from '@sentry-prompt/core';
+import { useStore, service } from '../store';
 
 export function Runs() {
   const { state, dispatch } = useStore();
@@ -17,15 +16,23 @@ export function Runs() {
     return matchesFilter && matchesPrompt;
   });
 
-  function handleDelete(id: string) {
-    if (confirm('Delete this run?')) {
-      dispatch({ type: 'SET_RUNS', payload: state.runs.filter(r => r.id !== id) });
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this run?')) return;
+    try {
+      await service.deleteRun(id);
+      dispatch({ type: 'DELETE_RUN', payload: id });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete run');
     }
   }
 
-  function handleClearAll() {
-    if (confirm('Delete all runs? This cannot be undone.')) {
+  async function handleClearAll() {
+    if (!confirm('Delete all runs? This cannot be undone.')) return;
+    try {
+      await service.deleteAllRuns();
       dispatch({ type: 'SET_RUNS', payload: [] });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to delete runs');
     }
   }
 

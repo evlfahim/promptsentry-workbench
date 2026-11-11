@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useStore } from '../store';
+import { useStore, service } from '../store';
 import type { APIConfig } from '@sentry-prompt/core';
 
 export function ApiConfig() {
@@ -8,6 +8,7 @@ export function ApiConfig() {
   const [apiKey, setApiKey] = useState('');
   const [defaultModel, setDefaultModel] = useState('');
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (state.apiConfig) {
@@ -17,7 +18,7 @@ export function ApiConfig() {
     }
   }, [state.apiConfig]);
 
-  function handleSave(e: React.FormEvent) {
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!baseUrl.trim()) return;
 
@@ -27,16 +28,23 @@ export function ApiConfig() {
       defaultModel: defaultModel.trim() || undefined,
     };
 
-    dispatch({ type: 'SET_API_CONFIG', payload: config });
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setError(null);
+    try {
+      const savedConfig = await service.setAPIConfig(config);
+      dispatch({ type: 'SET_API_CONFIG', payload: savedConfig });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save configuration');
+    }
   }
 
   function handleReset() {
-    dispatch({ type: 'SET_API_CONFIG', payload: { baseUrl: '' } });
-    setBaseUrl('');
-    setApiKey('');
-    setDefaultModel('');
+    // Reverts the form to the saved configuration.
+    setBaseUrl(state.apiConfig?.baseUrl ?? '');
+    setApiKey(state.apiConfig?.apiKey ?? '');
+    setDefaultModel(state.apiConfig?.defaultModel ?? '');
+    setError(null);
   }
 
   return (
@@ -89,6 +97,8 @@ export function ApiConfig() {
             This model will be used as the default for new prompts.
           </span>
         </div>
+
+        {error && <p style={styles.errorText}>Error: {error}</p>}
 
         <div style={styles.formActions}>
           <button type="submit" style={styles.saveButton}>
@@ -188,6 +198,11 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     fontWeight: 600,
+  },
+  errorText: {
+    color: '#ef4444',
+    fontSize: '14px',
+    margin: '0 0 8px',
   },
   resetButton: {
     backgroundColor: '#2d2d44',

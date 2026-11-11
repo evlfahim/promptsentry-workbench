@@ -1,25 +1,36 @@
-import { useState, useEffect } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useMemo } from 'react';
+import { useParams, Link } from 'react-router-dom';
 import { useStore, service } from '../store';
-import type { Prompt, PromptVersion, PromptRun } from '@sentry-prompt/core';
+import type { PromptRun } from '@sentry-prompt/core';
 
 export function PromptDetail() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { state, dispatch } = useStore();
 
   const prompt = state.prompts.find(p => p.id === id);
-  const versions = state.versions.filter(v => v.promptId === id);
-  const runs = state.runs.filter(r => r.promptId === id);
+  const versions = useMemo(
+    () => state.versions.filter(v => v.promptId === id).sort((a, b) => b.versionNumber - a.versionNumber),
+    [state.versions, id],
+  );
+  const runs = useMemo(
+    () =>
+      state.runs
+        .filter(r => r.promptId === id)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [state.runs, id],
+  );
 
+  // Editor state
   const [name, setName] = useState('');
   const [content, setContent] = useState('');
   const [model, setModel] = useState('');
   const [temperature, setTemperature] = useState(0.7);
   const [maxTokens, setMaxTokens] = useState(1024);
   const [systemPrompt, setSystemPrompt] = useState('');
-  const [isEditing, setIsEditing] = useState(false);
   const [commitMessage, setCommitMessage] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
   // Run panel state
   const [runInput, setRunInput] = useState('');
@@ -28,26 +39,40 @@ export function PromptDetail() {
   const [lastRun, setLastRun] = useState<PromptRun | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string>('');
 
+  // Load the prompt into the editor when it first becomes available or the route changes.
+  const loadedPromptId = prompt?.id;
   useEffect(() => {
-    if (prompt) {
-      setName(prompt.name);
-      setContent(prompt.content);
-      setModel(prompt.model);
-      setTemperature(prompt.temperature);
-      setMaxTokens(prompt.maxTokens);
-      setSystemPrompt(prompt.systemPrompt ?? '');
-      // Set the latest version as default
-      if (versions.length > 0) {
-        const latestVersion = versions.sort((a, b) => b.versionNumber - a.versionNumber)[0];
-        setSelectedVersionId(latestVersion.id);
-      }
+    if (!prompt) return;
+    setName(prompt.name);
+    setContent(prompt.content);
+    setModel(prompt.model);
+    setTemperature(prompt.temperature);
+    setMaxTokens(prompt.maxTokens);
+    setSystemPrompt(prompt.systemPrompt ?? '');
+    setCommitMessage('');
+    setSaveError(null);
+    setSaveNotice(null);
+    setLastRun(null);
+    setRunError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadedPromptId]);
+
+  // Default the run panel to the latest version; keep the selection valid.
+  const latestVersionId = versions[0]?.id ?? '';
+  useEffect(() => {
+    if (!versions.some(v => v.id === selectedVersionId)) {
+      setSelectedVersionId(latestVersionId);
     }
-  }, [prompt, versions]);
+  }, [versions, selectedVersionId, latestVersionId]);
 
   if (!prompt) {
     return (
       <div style={styles.container}>
-        <p style={styles.error}>Prompt not found.</p>
+        {state.isLoading ? (
+          <p style={styles.emptyText}>Loading…</p>
+        ) : (
+          <p style={styles.error}>Prompt not found.</p>
+        )}
         <Link to="/prompts" style={styles.link}>
           ← Back to Prompts
         </Link>
@@ -55,78 +80,82 @@ export function PromptDetail() {
     );
   }
 
-  function handleSave(e: React.FormEvent) {
+  const isDirty =
+    name !== prompt.name ||
+    content !== prompt.content ||
+    model !== prompt.model ||
+    temperature !== prompt.temperature ||
+    maxTokens !== prompt.maxTokens ||
+    systemPrompt.trim() !== (prompt.systemPrompt ?? '');
+
+  async function handleSave(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim() || !prompt) return;
+    if (!prompt || !name.trim()) return;
 
-    const now = new Date().toISOString();
-    const updated: Prompt = {
-      id: prompt.id,
-      name: name.trim(),
-      content,
-      model,
-      temperature,
-      maxTokens,
-      systemPrompt: systemPrompt.trim() || undefined,
-      createdAt: prompt.createdAt,
-      updatedAt: now,
-    };
-
-    dispatch({ type: 'UPDATE_PROMPT', payload: updated });
-    setIsEditing(false);
-    setCommitMessage('');
+    setIsSaving(true);
+    setSaveError(null);
+    setSaveNotice(null);
+    try {
+      const result = await service.updatePrompt(prompt.id, {
+        name: name.trim(),
+        content,
+        model: model.trim(),
+        temperature,
+        maxTokens,
+        systemPrompt: systemPrompt.trim(),
+        commitMessage: commitMessage.trim() || undefined,
+      });
+      dispatch({ type: 'UPDATE_PROMPT', payload: result.prompt });
+      setName(result.prompt.name);
+      setModel(result.prompt.model);
+      setSystemPrompt(result.prompt.systemPrompt ?? '');
+      if (result.version) {
+        dispatch({ type: 'ADD_VERSION', payload: result.version });
+        setSelectedVersionId(result.version.id);
+        setSaveNotice(`Saved as v${result.version.versionNumber}`);
+      } else {
+        setSaveNotice('Saved (no changes to version)');
+      }
+      setCommitMessage('');
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Failed to save prompt');
+    } finally {
+      setIsSaving(false);
+    }
   }
 
-  function handleCreateVersion() {
-    if (!content.trim() || !prompt) return;
-
-    const now = new Date().toISOString();
-    const versionId = crypto.randomUUID();
-    const contentHash = btoa(content).slice(0, 16);
-
-    const version: PromptVersion = {
-      id: versionId,
-      promptId: prompt.id,
-      content,
-      model,
-      temperature,
-      maxTokens,
-      systemPrompt: systemPrompt.trim() || undefined,
-      contentHash,
-      versionNumber: versions.length + 1,
-      createdAt: now,
-      commitMessage: commitMessage.trim() || undefined,
-    };
-
-    dispatch({ type: 'ADD_VERSION', payload: version });
-    setSelectedVersionId(versionId);
+  function handleRevert() {
+    if (!prompt) return;
+    setName(prompt.name);
+    setContent(prompt.content);
+    setModel(prompt.model);
+    setTemperature(prompt.temperature);
+    setMaxTokens(prompt.maxTokens);
+    setSystemPrompt(prompt.systemPrompt ?? '');
     setCommitMessage('');
+    setSaveError(null);
   }
 
   async function handleRun(e: React.FormEvent) {
     e.preventDefault();
-    if (!runInput.trim() || !prompt || !selectedVersionId) return;
+    if (!prompt || !selectedVersionId) return;
 
     setIsRunning(true);
     setRunError(null);
     setLastRun(null);
-
     try {
-      const run = await service.executePrompt(
-        prompt.id,
-        selectedVersionId,
-        runInput.trim(),
-      );
-
+      const run = await service.executePrompt(prompt.id, runInput, selectedVersionId);
       setLastRun(run);
       dispatch({ type: 'ADD_RUN', payload: run });
     } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : 'Unknown error';
-      setRunError(errorMsg);
+      setRunError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
       setIsRunning(false);
     }
   }
+
+  const selectedVersion = versions.find(v => v.id === selectedVersionId);
+  const apiConfigured = Boolean(state.apiConfig?.baseUrl);
 
   return (
     <div style={styles.container}>
@@ -134,147 +163,151 @@ export function PromptDetail() {
         <Link to="/prompts" style={styles.backLink}>
           ← Back to Prompts
         </Link>
-        <button
-          style={styles.editButton}
-          onClick={() => setIsEditing(!isEditing)}
-        >
-          {isEditing ? 'Cancel' : 'Edit'}
-        </button>
+        <span style={styles.metaItem}>
+          Updated {new Date(prompt.updatedAt).toLocaleString()}
+        </span>
       </div>
 
-      {isEditing ? (
-        <form onSubmit={handleSave} style={styles.form}>
-          <h2 style={styles.formTitle}>Edit Prompt</h2>
-          <div style={styles.formGrid}>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Name *</label>
-              <input
-                type="text"
-                value={name}
-                onChange={e => setName(e.target.value)}
-                style={styles.input}
-                required
-              />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Model</label>
-              <input
-                type="text"
-                value={model}
-                onChange={e => setModel(e.target.value)}
-                style={styles.input}
-              />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Temperature</label>
-              <input
-                type="number"
-                min="0"
-                max="2"
-                step="0.1"
-                value={temperature}
-                onChange={e => setTemperature(parseFloat(e.target.value))}
-                style={styles.input}
-              />
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Max Tokens</label>
-              <input
-                type="number"
-                min="1"
-                value={maxTokens}
-                onChange={e => setMaxTokens(parseInt(e.target.value))}
-                style={styles.input}
-              />
-            </div>
-          </div>
+      {/* Editor */}
+      <form onSubmit={handleSave} style={styles.form}>
+        <h2 style={styles.formTitle}>
+          Edit Prompt {isDirty && <span style={styles.dirtyBadge}>unsaved changes</span>}
+        </h2>
+        <div style={styles.formGrid}>
           <div style={styles.formGroup}>
-            <label style={styles.label}>Content *</label>
-            <textarea
-              value={content}
-              onChange={e => setContent(e.target.value)}
-              style={styles.textarea}
-              rows={10}
+            <label style={styles.label}>Name *</label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              style={styles.input}
               required
             />
           </div>
           <div style={styles.formGroup}>
-            <label style={styles.label}>System Prompt</label>
-            <textarea
-              value={systemPrompt}
-              onChange={e => setSystemPrompt(e.target.value)}
-              style={styles.textarea}
-              rows={4}
+            <label style={styles.label}>Model</label>
+            <input
+              type="text"
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              placeholder={state.apiConfig?.defaultModel || 'llama3'}
+              style={styles.input}
             />
           </div>
-          <button type="submit" style={styles.saveButton}>
-            Save Changes
-          </button>
-        </form>
-      ) : (
-        <div style={styles.detail}>
-          <h2 style={styles.detailTitle}>{prompt.name}</h2>
-          <div style={styles.detailMeta}>
-            <span style={styles.metaItem}>Model: {prompt.model}</span>
-            <span style={styles.metaItem}>Temperature: {prompt.temperature}</span>
-            <span style={styles.metaItem}>Max Tokens: {prompt.maxTokens}</span>
-            <span style={styles.metaItem}>
-              Created: {new Date(prompt.createdAt).toLocaleString()}
-            </span>
-            <span style={styles.metaItem}>
-              Updated: {new Date(prompt.updatedAt).toLocaleString()}
-            </span>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Temperature</label>
+            <input
+              type="number"
+              min="0"
+              max="2"
+              step="0.1"
+              value={temperature}
+              onChange={e => setTemperature(parseFloat(e.target.value) || 0)}
+              style={styles.input}
+            />
           </div>
-          {prompt.systemPrompt && (
-            <div style={styles.detailSection}>
-              <h3 style={styles.detailSectionTitle}>System Prompt</h3>
-              <pre style={styles.detailContent}>{prompt.systemPrompt}</pre>
-            </div>
-          )}
-          <div style={styles.detailSection}>
-            <h3 style={styles.detailSectionTitle}>Content</h3>
-            <pre style={styles.detailContent}>{prompt.content}</pre>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Max Tokens</label>
+            <input
+              type="number"
+              min="1"
+              value={maxTokens}
+              onChange={e => setMaxTokens(parseInt(e.target.value, 10) || 1)}
+              style={styles.input}
+            />
           </div>
         </div>
-      )}
+        <div style={styles.formGroup}>
+          <label style={styles.label}>System Prompt</label>
+          <textarea
+            value={systemPrompt}
+            onChange={e => setSystemPrompt(e.target.value)}
+            style={styles.textarea}
+            rows={3}
+          />
+        </div>
+        <div style={{ ...styles.formGroup, marginTop: '16px' }}>
+          <label style={styles.label}>Content *</label>
+          <textarea
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            style={styles.textarea}
+            rows={10}
+            required
+          />
+          <span style={styles.hint}>
+            Use <code>{'{{input}}'}</code> where the run input should go; otherwise the input is appended.
+          </span>
+        </div>
+        <div style={styles.saveRow}>
+          <input
+            type="text"
+            placeholder="Commit message (optional)"
+            value={commitMessage}
+            onChange={e => setCommitMessage(e.target.value)}
+            style={{ ...styles.input, flex: 1 }}
+          />
+          <button
+            type="submit"
+            style={{ ...styles.saveButton, opacity: isSaving || !isDirty ? 0.6 : 1 }}
+            disabled={isSaving || !isDirty}
+          >
+            {isSaving ? 'Saving…' : 'Save & Commit'}
+          </button>
+          <button
+            type="button"
+            style={styles.secondaryButton}
+            onClick={handleRevert}
+            disabled={isSaving || !isDirty}
+          >
+            Revert
+          </button>
+        </div>
+        {saveError && <p style={styles.errorText}>Error: {saveError}</p>}
+        {saveNotice && !saveError && <p style={styles.noticeText}>{saveNotice}</p>}
+      </form>
 
       {/* Run Panel */}
       <div style={styles.runSection}>
         <h3 style={styles.runTitle}>Run Prompt</h3>
+        {!apiConfigured && (
+          <p style={styles.warningText}>
+            No API endpoint configured. <Link to="/api-config" style={styles.link}>Configure API →</Link>
+          </p>
+        )}
         <form onSubmit={handleRun} style={styles.runForm}>
-          <div style={styles.runFormGrid}>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Version</label>
-              <select
-                value={selectedVersionId}
-                onChange={e => setSelectedVersionId(e.target.value)}
-                style={styles.input}
-                disabled={versions.length === 0}
-              >
-                {versions.length === 0 ? (
-                  <option value="">No versions available</option>
-                ) : (
-                  versions
-                    .sort((a, b) => b.versionNumber - a.versionNumber)
-                    .map(v => (
-                      <option key={v.id} value={v.id}>
-                        v{v.versionNumber} ({v.contentHash})
-                      </option>
-                    ))
-                )}
-              </select>
-            </div>
-            <div style={styles.formGroup}>
-              <label style={styles.label}>Input</label>
-              <input
-                type="text"
-                value={runInput}
-                onChange={e => setRunInput(e.target.value)}
-                placeholder="Enter prompt input..."
-                style={styles.input}
-                required
-              />
-            </div>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Version</label>
+            <select
+              value={selectedVersionId}
+              onChange={e => setSelectedVersionId(e.target.value)}
+              style={styles.input}
+              disabled={versions.length === 0}
+            >
+              {versions.length === 0 ? (
+                <option value="">No versions available</option>
+              ) : (
+                versions.map(v => (
+                  <option key={v.id} value={v.id}>
+                    v{v.versionNumber} · {v.model} · t={v.temperature}
+                    {v.commitMessage ? ` — ${v.commitMessage}` : ''}
+                  </option>
+                ))
+              )}
+            </select>
+            {isDirty && (
+              <span style={styles.hint}>Unsaved editor changes are not used — save first to run them.</span>
+            )}
+          </div>
+          <div style={styles.formGroup}>
+            <label style={styles.label}>Input</label>
+            <textarea
+              value={runInput}
+              onChange={e => setRunInput(e.target.value)}
+              placeholder="Text to insert at {{input}} (optional)"
+              style={styles.textarea}
+              rows={4}
+            />
           </div>
           <button
             type="submit"
@@ -282,9 +315,9 @@ export function PromptDetail() {
               ...styles.runButton,
               backgroundColor: isRunning ? '#606070' : '#4a9eff',
             }}
-            disabled={isRunning || versions.length === 0}
+            disabled={isRunning || !selectedVersion}
           >
-            {isRunning ? 'Running...' : 'Run'}
+            {isRunning ? 'Running…' : `Run v${selectedVersion?.versionNumber ?? '?'}`}
           </button>
         </form>
 
@@ -296,114 +329,101 @@ export function PromptDetail() {
 
         {lastRun && (
           <div style={styles.runResult}>
-            <h4 style={styles.runResultTitle}>Run Result</h4>
+            <h4 style={{ ...styles.runResultTitle, color: lastRun.error ? '#ef4444' : '#34d399' }}>
+              {lastRun.error ? 'Run Failed' : 'Run Result'}
+            </h4>
             <div style={styles.runMetrics}>
-              <span style={styles.metricItem}>
-                Tokens: {lastRun.tokenCount}
-              </span>
-              <span style={styles.metricItem}>
-                Latency: {lastRun.latencyMs}ms
-              </span>
-              {lastRun.cost !== undefined && (
-                <span style={styles.metricItem}>
-                  Cost: ${lastRun.cost.toFixed(4)}
-                </span>
+              <span style={styles.metricItem}>Model: {lastRun.model}</span>
+              <span style={styles.metricItem}>Tokens: {lastRun.tokenCount}</span>
+              <span style={styles.metricItem}>Latency: {lastRun.latencyMs}ms</span>
+              {lastRun.cost != null && (
+                <span style={styles.metricItem}>Cost: ${lastRun.cost.toFixed(4)}</span>
               )}
               <span style={styles.metricItem}>
                 Time: {new Date(lastRun.createdAt).toLocaleString()}
               </span>
             </div>
             <div style={styles.runOutput}>
-              <h5 style={styles.runOutputTitle}>Output</h5>
+              <h5 style={styles.runOutputTitle}>{lastRun.error ? 'Error' : 'Output'}</h5>
               <pre style={styles.runOutputContent}>
-                {lastRun.output || lastRun.error || '(no output)'}
+                {lastRun.error || lastRun.output || '(no output)'}
               </pre>
             </div>
           </div>
         )}
       </div>
 
+      {/* Versions */}
       <div style={styles.versionsSection}>
-        <h3 style={styles.versionsTitle}>
-          Versions ({versions.length})
-        </h3>
+        <h3 style={styles.versionsTitle}>Versions ({versions.length})</h3>
         {versions.length === 0 ? (
-          <p style={styles.emptyText}>No versions yet. Edit the prompt and save to create a version.</p>
+          <p style={styles.emptyText}>No versions yet. Save the prompt to create one.</p>
         ) : (
           <div style={styles.versionsList}>
-            {versions
-              .sort((a, b) => b.versionNumber - a.versionNumber)
-              .map(v => (
-                <div key={v.id} style={styles.versionItem}>
-                  <div style={styles.versionHeader}>
-                    <span style={styles.versionNumber}>v{v.versionNumber}</span>
-                    <span style={styles.versionHash}>{v.contentHash}</span>
-                    <span style={styles.versionDate}>
-                      {new Date(v.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  {v.commitMessage && (
-                    <p style={styles.commitMessage}>{v.commitMessage}</p>
-                  )}
+            {versions.map(v => (
+              <div
+                key={v.id}
+                style={{
+                  ...styles.versionItem,
+                  borderColor: v.id === selectedVersionId ? '#4a9eff' : '#2d2d44',
+                }}
+              >
+                <div style={styles.versionHeader}>
+                  <span style={styles.versionNumber}>v{v.versionNumber}</span>
+                  <span style={styles.versionHash}>{v.contentHash.slice(0, 12)}</span>
+                  <span style={styles.versionDate}>{new Date(v.createdAt).toLocaleString()}</span>
+                  <span style={styles.versionDate}>
+                    {v.model} · t={v.temperature} · max {v.maxTokens}
+                  </span>
+                  <button
+                    type="button"
+                    style={styles.smallButton}
+                    onClick={() => setSelectedVersionId(v.id)}
+                  >
+                    Select for run
+                  </button>
                 </div>
-              ))}
+                {v.commitMessage && <p style={styles.commitMessage}>{v.commitMessage}</p>}
+              </div>
+            ))}
           </div>
         )}
       </div>
 
-      <div style={styles.createVersionSection}>
-        <h3 style={styles.versionsTitle}>Create New Version</h3>
-        <div style={styles.createVersionForm}>
-          <input
-            type="text"
-            placeholder="Commit message (optional)"
-            value={commitMessage}
-            onChange={e => setCommitMessage(e.target.value)}
-            style={styles.input}
-          />
-          <button style={styles.createVersionButton} onClick={handleCreateVersion}>
-            Create Version
-          </button>
-        </div>
-      </div>
-
       {/* Runs History */}
       <div style={styles.runsSection}>
-        <h3 style={styles.versionsTitle}>
-          Runs ({runs.length})
-        </h3>
+        <h3 style={styles.versionsTitle}>Runs ({runs.length})</h3>
         {runs.length === 0 ? (
           <p style={styles.emptyText}>No runs yet. Use the run panel above to execute this prompt.</p>
         ) : (
           <div style={styles.runsList}>
-            {runs
-              .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-              .map(r => (
-                <div key={r.id} style={styles.runItem}>
-                  <div style={styles.runHeader}>
-                    <span style={styles.runDate}>
-                      {new Date(r.createdAt).toLocaleString()}
-                    </span>
-                    <span style={styles.runMetrics}>
-                      {r.tokenCount} tokens · {r.latencyMs}ms
-                      {r.cost !== undefined && ` · $${r.cost.toFixed(4)}`}
-                    </span>
-                  </div>
-                  <p style={styles.runInput}>
-                    <strong>Input:</strong> {r.input}
-                  </p>
-                  {r.error ? (
-                    <p style={styles.runError}>
-                      <strong>Error:</strong> {r.error}
-                    </p>
-                  ) : (
-                    <pre style={styles.runOutputPreview}>
-                      {r.output?.substring(0, 200)}
-                      {r.output && r.output.length > 200 ? '...' : ''}
-                    </pre>
-                  )}
+            {runs.map(r => (
+              <div key={r.id} style={styles.runItem}>
+                <div style={styles.runHeader}>
+                  <span style={styles.runDate}>
+                    v{versions.find(v => v.id === r.versionId)?.versionNumber ?? '?'} ·{' '}
+                    {new Date(r.createdAt).toLocaleString()}
+                  </span>
+                  <span style={styles.metricItem}>
+                    {r.tokenCount} tokens · {r.latencyMs}ms
+                    {r.cost != null && ` · $${r.cost.toFixed(4)}`}
+                  </span>
                 </div>
-              ))}
+                <p style={styles.runInput}>
+                  <strong>Input:</strong> {r.input.length > 200 ? r.input.substring(0, 200) + '…' : r.input}
+                </p>
+                {r.error ? (
+                  <p style={styles.runError}>
+                    <strong>Error:</strong> {r.error}
+                  </p>
+                ) : (
+                  <pre style={styles.runOutputPreview}>
+                    {r.output?.substring(0, 200)}
+                    {r.output && r.output.length > 200 ? '…' : ''}
+                  </pre>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -428,15 +448,6 @@ const styles: Record<string, React.CSSProperties> = {
     textDecoration: 'none',
     fontSize: '14px',
   },
-  editButton: {
-    backgroundColor: '#2d2d44',
-    color: '#e0e0e0',
-    border: 'none',
-    padding: '8px 16px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontSize: '14px',
-  },
   form: {
     backgroundColor: '#1a1a2e',
     borderRadius: '8px',
@@ -446,11 +457,23 @@ const styles: Record<string, React.CSSProperties> = {
   },
   formTitle: {
     color: '#e0e0e0',
+    marginTop: 0,
     marginBottom: '16px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+  },
+  dirtyBadge: {
+    backgroundColor: '#f59e0b',
+    color: '#0d0d1a',
+    fontSize: '11px',
+    fontWeight: 600,
+    padding: '2px 8px',
+    borderRadius: '10px',
   },
   formGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
     gap: '16px',
     marginBottom: '16px',
   },
@@ -463,6 +486,10 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#a0a0b0',
     fontSize: '13px',
     fontWeight: 600,
+  },
+  hint: {
+    color: '#606070',
+    fontSize: '12px',
   },
   input: {
     backgroundColor: '#0d0d1a',
@@ -482,6 +509,12 @@ const styles: Record<string, React.CSSProperties> = {
     resize: 'vertical',
     fontFamily: 'monospace',
   },
+  saveRow: {
+    display: 'flex',
+    gap: '12px',
+    alignItems: 'center',
+    marginTop: '16px',
+  },
   saveButton: {
     backgroundColor: '#4a9eff',
     color: '#ffffff',
@@ -490,6 +523,25 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: '6px',
     cursor: 'pointer',
     fontWeight: 600,
+    whiteSpace: 'nowrap',
+  },
+  secondaryButton: {
+    backgroundColor: '#2d2d44',
+    color: '#e0e0e0',
+    border: 'none',
+    padding: '10px 16px',
+    borderRadius: '6px',
+    cursor: 'pointer',
+  },
+  smallButton: {
+    marginLeft: 'auto',
+    backgroundColor: '#2d2d44',
+    color: '#e0e0e0',
+    border: 'none',
+    padding: '4px 10px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '12px',
   },
   error: {
     color: '#ef4444',
@@ -499,46 +551,19 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#4a9eff',
     textDecoration: 'none',
   },
-  detail: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '24px',
-    marginBottom: '24px',
-    border: '1px solid #2d2d44',
-  },
-  detailTitle: {
-    color: '#ffffff',
-    fontSize: '24px',
-    marginBottom: '16px',
-  },
-  detailMeta: {
-    display: 'flex',
-    gap: '16px',
-    flexWrap: 'wrap',
-    marginBottom: '24px',
-  },
   metaItem: {
     color: '#606070',
     fontSize: '13px',
   },
-  detailSection: {
-    marginBottom: '24px',
-  },
-  detailSectionTitle: {
-    color: '#a0a0b0',
+  noticeText: {
+    color: '#34d399',
     fontSize: '14px',
-    fontWeight: 600,
-    marginBottom: '8px',
+    margin: '12px 0 0',
   },
-  detailContent: {
-    backgroundColor: '#0d0d1a',
-    borderRadius: '4px',
-    padding: '16px',
-    color: '#e0e0e0',
+  warningText: {
+    color: '#f59e0b',
     fontSize: '14px',
-    whiteSpace: 'pre-wrap',
-    fontFamily: 'monospace',
-    overflowX: 'auto',
+    marginTop: 0,
   },
   // Run panel styles
   runSection: {
@@ -551,16 +576,12 @@ const styles: Record<string, React.CSSProperties> = {
   runTitle: {
     color: '#e0e0e0',
     fontSize: '18px',
+    marginTop: 0,
     marginBottom: '16px',
   },
   runForm: {
     display: 'flex',
     flexDirection: 'column',
-    gap: '16px',
-  },
-  runFormGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
     gap: '16px',
   },
   runButton: {
@@ -583,7 +604,7 @@ const styles: Record<string, React.CSSProperties> = {
   errorText: {
     color: '#ef4444',
     fontSize: '14px',
-    margin: 0,
+    margin: '12px 0 0',
   },
   runResult: {
     backgroundColor: '#0d0d1a',
@@ -593,8 +614,8 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #2d2d44',
   },
   runResultTitle: {
-    color: '#34d399',
     fontSize: '16px',
+    marginTop: 0,
     marginBottom: '12px',
   },
   runMetrics: {
@@ -614,6 +635,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#a0a0b0',
     fontSize: '14px',
     fontWeight: 600,
+    marginTop: 0,
     marginBottom: '8px',
   },
   runOutputContent: {
@@ -624,8 +646,9 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: '14px',
     whiteSpace: 'pre-wrap',
     fontFamily: 'monospace',
-    maxHeight: '200px',
+    maxHeight: '400px',
     overflowY: 'auto',
+    margin: 0,
   },
   // Runs history styles
   runsSection: {
@@ -656,6 +679,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#a0a0b0',
     fontSize: '13px',
     marginBottom: '4px',
+    whiteSpace: 'pre-wrap',
   },
   runError: {
     color: '#ef4444',
@@ -671,7 +695,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontFamily: 'monospace',
     marginTop: '4px',
   },
-  // Versions styles (unchanged)
+  // Versions styles
   versionsSection: {
     marginBottom: '24px',
   },
@@ -692,12 +716,15 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: '#1a1a2e',
     borderRadius: '6px',
     padding: '12px 16px',
-    border: '1px solid #2d2d44',
+    borderWidth: '1px',
+    borderStyle: 'solid',
+    borderColor: '#2d2d44',
   },
   versionHeader: {
     display: 'flex',
     gap: '16px',
     alignItems: 'center',
+    flexWrap: 'wrap',
   },
   versionNumber: {
     color: '#4a9eff',
@@ -717,26 +744,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#a0a0b0',
     fontSize: '13px',
     marginTop: '4px',
-    marginLeft: '0',
-  },
-  createVersionSection: {
-    backgroundColor: '#1a1a2e',
-    borderRadius: '8px',
-    padding: '24px',
-    border: '1px solid #2d2d44',
-  },
-  createVersionForm: {
-    display: 'flex',
-    gap: '12px',
-    alignItems: 'center',
-  },
-  createVersionButton: {
-    backgroundColor: '#34d399',
-    color: '#ffffff',
-    border: 'none',
-    padding: '10px 20px',
-    borderRadius: '6px',
-    cursor: 'pointer',
-    fontWeight: 600,
+    marginBottom: 0,
   },
 };
