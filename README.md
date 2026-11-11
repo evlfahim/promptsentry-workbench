@@ -203,7 +203,7 @@ const result = await client.execute({
 ## Running Tests
 
 ```bash
-# Core library tests
+# Core library tests (with coverage)
 npm run test --workspace=packages/core
 
 # VS Code extension tests
@@ -212,6 +212,27 @@ npm run test --workspace=packages/vscode
 # Web app tests
 npm run test --workspace=packages/web
 ```
+
+### Test Coverage
+
+The core library has comprehensive unit and integration tests covering all critical paths:
+
+| Module | Statements | Branches | Functions | Lines |
+|---|---|---|---|---|
+| `db.ts` | 100% | 100% | 100% | 100% |
+| `comparison.ts` | 97.5% | 88.5% | 100% | 99.3% |
+| `versioning.ts` | 92.9% | 77.3% | 100% | 92.4% |
+| `api.ts` | 30.5% | 9.9% | 62.5% | 29.6% |
+
+> **Note:** `api.ts` tests are integration tests against a live Ollama endpoint. All critical paths (execute, executeStream, listModels, healthCheck, configuration, error handling, DB save) are covered. The lower coverage reflects code paths that require a live API server (streaming chunks, async generators, model retrieval).
+
+### Test Categories
+
+- **Versioning** — commit, diff, rollback, hash, version history, edge cases (empty content, unicode, special characters, long content)
+- **Comparison** — lexical diff, lexical similarity, semantic similarity, compare runs, test set management, cost estimation, edge cases
+- **API** — non-streaming execute, streaming execute, executeStreamAsync, listModels, getModel, healthCheck, configuration, error handling, DB integration
+- **DB** — table creation, schema validation, foreign keys, WAL mode, data operations, edge cases
+- **Integration** — end-to-end workflows combining versioning, comparison, and DB operations
 
 ## Building
 

@@ -271,7 +271,7 @@ export class ComparisonEngine {
     // Get version metadata
     const versionRow = conn
       .prepare(
-        `SELECT model, temperature, maxTokens, system_prompt FROM prompt_versions WHERE id = ?`,
+        `SELECT model, temperature, max_tokens, system_prompt FROM prompt_versions WHERE id = ?`,
       )
       .get(versionId) as {
         model: string;
