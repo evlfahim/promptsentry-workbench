@@ -8,3 +8,26 @@ coverage/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# added by Jarvis: build output, installers, local data
+build/
+out/
+release/
+.next/
+target/
+__pycache__/
+.venv/
+*.AppImage
+*.deb
+*.rpm
+*.exe
+*.msi
+*.dmg
+*.vsix
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+.env
+.env.*
+!.env.example
